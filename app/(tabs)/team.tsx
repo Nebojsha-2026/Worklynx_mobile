@@ -21,31 +21,48 @@ export default function TeamScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const { organization, role } = useAuthStore();
+  const { user, organization, role } = useAuthStore();
   const [search, setSearch] = useState('');
   const [selectedMember, setSelectedMember] = useState<any>(null);
   const [showInvite, setShowInvite] = useState(false);
 
   const isBO = role === 'BO';
   const isBM = role === 'BM';
+  const canManage = isBO || isBM;
 
   const { data: members = [], isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['team-members', organization?.id],
     queryFn: async () => {
       if (!organization?.id) return [];
-      const { data } = await supabase
+
+      // Step 1: fetch org_members (RLS allows org members to see each other)
+      const { data: membersData, error: membersError } = await supabase
         .from('org_members')
-        .select('*, profiles(user_id, full_name, phone, avatar_url)')
+        .select('*')
         .eq('organization_id', organization.id)
         .order('role')
         .order('created_at');
-      return data ?? [];
+
+      if (membersError || !membersData?.length) return membersData ?? [];
+
+      // Step 2: fetch profiles for all member user_ids
+      // Note: profiles RLS currently only allows reading own profile.
+      // If the Supabase profiles_select policy is updated to allow org-member reads,
+      // names will appear. Otherwise members show without names (role/status still visible).
+      const userIds = membersData.map((m) => m.user_id);
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, phone, avatar_url')
+        .in('user_id', userIds);
+
+      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+      return membersData.map((m) => ({ ...m, profile: profileMap[m.user_id] ?? null }));
     },
     enabled: !!organization?.id,
   });
 
   const filtered = members.filter((m: any) => {
-    const name = fullName(m.profiles?.full_name).toLowerCase();
+    const name = fullName(m.profile?.full_name).toLowerCase();
     const q = search.toLowerCase();
     return !q || name.includes(q);
   });
@@ -64,34 +81,33 @@ export default function TeamScreen() {
       queryClient.invalidateQueries({ queryKey: ['team-members'] });
       setSelectedMember(null);
     },
+    onError: (err: any) => toast.error('Failed to deactivate', err?.message),
   });
 
-  const renderItem = ({ item }: { item: any }) => (
-    <Card style={styles.card} onPress={() => setSelectedMember(item)}>
-      <View style={styles.memberRow}>
-        <Avatar
-          name={fullName(item.profiles?.full_name)}
-          url={item.profiles?.avatar_url}
-          size={44}
-          color={roleColor(item.role)}
-        />
-        <View style={styles.memberInfo}>
-          <Text style={styles.memberName}>{fullName(item.profiles?.full_name)}</Text>
-          <View style={styles.memberMeta}>
-            <Badge label={roleLabel(item.role)} color={roleColor(item.role)} size="sm" />
-            {!item.is_active && <Badge label="Inactive" status="inactive" size="sm" />}
+  const renderItem = ({ item }: { item: any }) => {
+    const name = fullName(item.profile?.full_name);
+    return (
+      <Card style={styles.card} onPress={() => setSelectedMember(item)}>
+        <View style={styles.memberRow}>
+          <Avatar name={name} url={item.profile?.avatar_url} size={44} color={roleColor(item.role)} />
+          <View style={styles.memberInfo}>
+            <Text style={styles.memberName}>{name}</Text>
+            <View style={styles.memberMeta}>
+              <Badge label={roleLabel(item.role)} color={roleColor(item.role)} size="sm" />
+              {!item.is_active && <Badge label="Inactive" status="REJECTED" size="sm" />}
+            </View>
           </View>
+          <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
         </View>
-        <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-      </View>
-    </Card>
-  );
+      </Card>
+    );
+  };
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Text style={styles.title}>Team</Text>
-        {(isBO || isBM) && (
+        {canManage && (
           <TouchableOpacity style={styles.inviteBtn} onPress={() => setShowInvite(true)}>
             <Ionicons name="person-add-outline" size={18} color={Colors.primary} />
             <Text style={styles.inviteBtnText}>Invite</Text>
@@ -132,7 +148,7 @@ export default function TeamScreen() {
               icon="people-outline"
               title={search ? 'No members found' : 'No team members yet'}
               description={search ? 'Try a different search term.' : 'Invite your team to get started.'}
-              actionLabel={!search && (isBO || isBM) ? 'Invite Member' : undefined}
+              actionLabel={!search && canManage ? 'Invite Member' : undefined}
               onAction={() => setShowInvite(true)}
             />
           }
@@ -146,7 +162,7 @@ export default function TeamScreen() {
             onClose={() => setSelectedMember(null)}
             onDeactivate={() => deactivateMutation.mutate(selectedMember.id)}
             deactivating={deactivateMutation.isPending}
-            canManage={isBO || isBM}
+            canManage={canManage}
           />
         )}
       </Modal>
@@ -160,7 +176,7 @@ export default function TeamScreen() {
 
 function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canManage }: any) {
   const insets = useSafeAreaInsets();
-  const name = fullName(member.profiles?.full_name);
+  const name = fullName(member.profile?.full_name);
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
@@ -172,31 +188,25 @@ function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canMan
         </View>
 
         <View style={styles.profileSection}>
-          <Avatar name={name} url={member.profiles?.avatar_url} size={72} color={roleColor(member.role)} />
+          <Avatar name={name} url={member.profile?.avatar_url} size={72} color={roleColor(member.role)} />
           <Text style={styles.profileName}>{name}</Text>
           <View style={styles.profileBadges}>
             <Badge label={roleLabel(member.role)} color={roleColor(member.role)} />
-            {!member.is_active && <Badge label="Inactive" status="inactive" />}
+            {!member.is_active && <Badge label="Inactive" status="REJECTED" />}
           </View>
         </View>
 
         <Divider margin="sm" />
 
         <View style={styles.detailList}>
-          {member.profiles?.phone && <DetailRow icon="call-outline" label="Phone" value={member.profiles.phone} />}
+          {member.profile?.phone && <DetailRow icon="call-outline" label="Phone" value={member.profile.phone} />}
           {member.start_date && <DetailRow icon="calendar-outline" label="Start date" value={formatDate(member.start_date)} />}
-          {member.hourly_rate && <DetailRow icon="cash-outline" label="Hourly rate" value={`$${member.hourly_rate}`} />}
+          {member.employment_type && <DetailRow icon="briefcase-outline" label="Employment" value={member.employment_type} />}
+          {member.payment_frequency && <DetailRow icon="cash-outline" label="Pay frequency" value={member.payment_frequency} />}
         </View>
 
-        {canManage && member.is_active && (
-          <Button
-            title="Deactivate Member"
-            variant="danger"
-            onPress={onDeactivate}
-            loading={deactivating}
-            fullWidth
-            style={{ marginTop: Spacing.md }}
-          />
+        {canManage && member.is_active && member.user_id !== member.own_user_id && (
+          <Button title="Deactivate Member" variant="danger" onPress={onDeactivate} loading={deactivating} fullWidth style={{ marginTop: Spacing.md }} />
         )}
       </ScrollView>
     </View>
@@ -228,7 +238,6 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
       const expires = new Date();
       expires.setDate(expires.getDate() + 7);
       const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-
       const { error } = await supabase.from('invites').insert({
         organization_id: orgId,
         invited_email: email.trim().toLowerCase(),
@@ -255,7 +264,6 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
         <Text style={styles.modalTitle}>Invite Team Member</Text>
         <TouchableOpacity onPress={onClose}><Ionicons name="close" size={24} color={Colors.textSecondary} /></TouchableOpacity>
       </View>
-
       <Text style={styles.fieldLabel}>Email address</Text>
       <View style={styles.inputWrap}>
         <Ionicons name="mail-outline" size={16} color={Colors.textMuted} style={styles.inputIcon} />
@@ -270,7 +278,6 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
           placeholderTextColor={Colors.textMuted}
         />
       </View>
-
       <Text style={[styles.fieldLabel, { marginTop: Spacing.md }]}>Role</Text>
       <View style={styles.roleList}>
         {roles.map((r) => (
@@ -286,7 +293,6 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
           </TouchableOpacity>
         ))}
       </View>
-
       <Button title="Send Invitation" onPress={handleInvite} loading={loading} fullWidth size="lg" style={{ marginTop: Spacing.xl }} />
     </View>
   );
