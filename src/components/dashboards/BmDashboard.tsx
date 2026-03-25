@@ -19,10 +19,18 @@ export function BmDashboard() {
     queryKey: ['bm-stats', organization?.id],
     queryFn: async () => {
       if (!organization?.id) return null;
+      const today = new Date().toISOString().split('T')[0];
       const [membersRes, pendingRes, shiftsRes] = await Promise.all([
-        supabase.from('org_members').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'active'),
-        supabase.from('timesheets').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'submitted'),
-        supabase.from('shifts').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'published').gte('start_time', new Date().toISOString()),
+        supabase.from('org_members').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('is_active', true),
+        supabase.from('timesheets').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('status', 'SUBMITTED'),
+        supabase.from('shifts').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('status', 'PUBLISHED')
+          .gte('shift_date', today),
       ]);
       return { members: membersRes.count ?? 0, pending: pendingRes.count ?? 0, shifts: shiftsRes.count ?? 0 };
     },
@@ -35,12 +43,21 @@ export function BmDashboard() {
       if (!organization?.id) return [];
       const { data } = await supabase
         .from('timesheets')
-        .select('*, profiles(first_name, last_name)')
+        .select('*, shifts(title, shift_date)')
         .eq('organization_id', organization.id)
-        .in('status', ['submitted', 'approved', 'rejected'])
+        .in('status', ['SUBMITTED', 'APPROVED', 'REJECTED'])
         .order('updated_at', { ascending: false })
         .limit(8);
-      return data ?? [];
+      if (!data || data.length === 0) return [];
+
+      const userIds = [...new Set(data.map((t) => t.employee_user_id).filter(Boolean))];
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, avatar_url')
+        .in('user_id', userIds);
+      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+
+      return data.map((ts) => ({ ...ts, profile: profileMap[ts.employee_user_id] ?? null }));
     },
     enabled: !!organization?.id,
   });
@@ -57,10 +74,13 @@ export function BmDashboard() {
       {recentTimesheets.map((ts: any) => (
         <Card key={ts.id} style={styles.card} onPress={() => router.push('/(tabs)/approvals')}>
           <View style={styles.row}>
-            <Avatar name={fullName(ts.profiles?.first_name, ts.profiles?.last_name)} size={36} color={Colors.roleBM} />
+            <Avatar name={fullName(ts.profile?.full_name)} url={ts.profile?.avatar_url} size={36} color={Colors.roleBM} />
             <View style={styles.info}>
-              <Text style={styles.name}>{fullName(ts.profiles?.first_name, ts.profiles?.last_name)}</Text>
-              <Text style={styles.date}>{formatDate(ts.start_time, 'EEE dd MMM')}</Text>
+              <Text style={styles.name}>{fullName(ts.profile?.full_name)}</Text>
+              <Text style={styles.date}>
+                {ts.shifts?.title ?? 'Manual entry'}
+                {ts.shifts?.shift_date ? ` · ${formatDate(ts.shifts.shift_date, 'EEE dd MMM')}` : ''}
+              </Text>
             </View>
             <Badge label={ts.status} status={ts.status} size="sm" />
           </View>

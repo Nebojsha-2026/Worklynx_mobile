@@ -2,17 +2,16 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { Card } from '@/components/ui/Card';
 import { StatCard } from '@/components/ui/StatCard';
-import { Badge } from '@/components/ui/Badge';
-import { Avatar } from '@/components/ui/Avatar';
 import { SectionHeader } from '@/components/ui/SectionHeader';
+import { Avatar } from '@/components/ui/Avatar';
 import { LoadingScreen } from '@/components/ui/LoadingScreen';
-import { Colors, FontSize, FontWeight, Spacing } from '@/lib/theme';
-import { formatCurrency, formatHours, formatDate, fullName } from '@/lib/format';
+import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
+import { formatCurrency, formatHours } from '@/lib/format';
+import { fullName } from '@/lib/format';
 
 type Period = 'week' | 'month' | 'all';
 
@@ -21,15 +20,14 @@ export default function ReportsScreen() {
   const { organization } = useAuthStore();
   const [period, setPeriod] = useState<Period>('month');
 
-  function getDateRange(p: Period) {
+  function getDateRange(p: Period): string {
     const now = new Date();
     if (p === 'week') {
       const start = new Date(now);
       start.setDate(start.getDate() - 7);
       return start.toISOString();
     } else if (p === 'month') {
-      const start = new Date(now.getFullYear(), now.getMonth(), 1);
-      return start.toISOString();
+      return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
     }
     return new Date(2020, 0, 1).toISOString();
   }
@@ -41,39 +39,58 @@ export default function ReportsScreen() {
       const since = getDateRange(period);
 
       const [timesheetsRes, earningsRes, membersRes, shiftsRes] = await Promise.all([
-        supabase.from('timesheets').select('*').eq('organization_id', organization.id).gte('created_at', since),
-        supabase.from('earnings').select('*, profiles(first_name, last_name)').eq('organization_id', organization.id).gte('created_at', since),
-        supabase.from('org_members').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'active'),
-        supabase.from('shifts').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).gte('start_time', since),
+        supabase.from('timesheets').select('id, status').eq('organization_id', organization.id).gte('created_at', since),
+        supabase.from('earnings').select('employee_user_id, minutes_worked, minutes_paid, hourly_rate').eq('organization_id', organization.id).gte('earned_at', since),
+        supabase.from('org_members').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('is_active', true),
+        supabase.from('shifts').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).gte('shift_date', since.split('T')[0]),
       ]);
 
       const timesheets = timesheetsRes.data ?? [];
       const earnings = earningsRes.data ?? [];
 
-      const approved = timesheets.filter((t) => t.status === 'approved').length;
-      const pending = timesheets.filter((t) => t.status === 'submitted').length;
-      const totalHours = timesheets.reduce((s, t) => s + (t.total_hours ?? 0), 0);
-      const totalWages = earnings.reduce((s, e) => s + (e.amount ?? 0), 0);
+      const approved = timesheets.filter((t) => t.status === 'APPROVED').length;
+      const pending = timesheets.filter((t) => t.status === 'SUBMITTED').length;
+      const totalMinutes = earnings.reduce((s, e) => s + (e.minutes_worked ?? 0), 0);
+      const totalWages = earnings.reduce((s, e) => {
+        const hrs = (e.minutes_paid ?? 0) / 60;
+        return s + hrs * (e.hourly_rate ?? 0);
+      }, 0);
 
-      // Top earners
-      const byEmployee: Record<string, { name: string; amount: number; hours: number }> = {};
+      // Top earners by minutes worked
+      const byEmployee: Record<string, { minutes: number; wages: number }> = {};
       for (const e of earnings) {
-        const userId = (e as any).user_id;
-        const name = fullName((e as any).profiles?.first_name, (e as any).profiles?.last_name);
-        if (!byEmployee[userId]) byEmployee[userId] = { name, amount: 0, hours: 0 };
-        byEmployee[userId].amount += e.amount ?? 0;
-        byEmployee[userId].hours += e.hours ?? 0;
+        const uid = e.employee_user_id;
+        if (!uid) continue;
+        if (!byEmployee[uid]) byEmployee[uid] = { minutes: 0, wages: 0 };
+        byEmployee[uid].minutes += e.minutes_worked ?? 0;
+        const hrs = (e.minutes_paid ?? 0) / 60;
+        byEmployee[uid].wages += hrs * (e.hourly_rate ?? 0);
       }
-      const topEarners = Object.entries(byEmployee)
-        .map(([id, v]) => ({ id, ...v }))
-        .sort((a, b) => b.hours - a.hours)
-        .slice(0, 10);
+
+      // Fetch profile names for top earners
+      const topIds = Object.entries(byEmployee)
+        .sort((a, b) => b[1].minutes - a[1].minutes)
+        .slice(0, 10)
+        .map(([id]) => id);
+
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('user_id, full_name')
+        .in('user_id', topIds);
+      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p.full_name]));
+
+      const topEarners = topIds.map((id) => ({
+        id,
+        name: fullName(profileMap[id]),
+        minutes: byEmployee[id].minutes,
+        wages: byEmployee[id].wages,
+      }));
 
       return {
         totalTimesheets: timesheets.length,
         approved,
         pending,
-        totalHours,
+        totalMinutes,
         totalWages,
         activeMembers: membersRes.count ?? 0,
         totalShifts: shiftsRes.count ?? 0,
@@ -95,7 +112,6 @@ export default function ReportsScreen() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={Colors.primary} />}
       >
-        {/* Period selector */}
         <View style={styles.periodRow}>
           {(['week', 'month', 'all'] as Period[]).map((p) => (
             <TouchableOpacity
@@ -115,7 +131,7 @@ export default function ReportsScreen() {
         ) : data ? (
           <>
             <View style={styles.statsRow}>
-              <StatCard label="Total Hours" value={formatHours(data.totalHours)} icon="time" color={Colors.primary} />
+              <StatCard label="Total Hours" value={formatHours(data.totalMinutes)} icon="time" color={Colors.primary} />
               <StatCard label="Wages Paid" value={formatCurrency(data.totalWages)} icon="cash" color={Colors.success} />
             </View>
             <View style={styles.statsRow}>
@@ -123,7 +139,6 @@ export default function ReportsScreen() {
               <StatCard label="Shifts" value={data.totalShifts} icon="calendar" color={Colors.warning} />
             </View>
 
-            {/* Timesheet breakdown */}
             <Card style={styles.breakdownCard}>
               <Text style={styles.breakdownTitle}>Timesheet Status</Text>
               <View style={styles.breakdownGrid}>
@@ -133,7 +148,6 @@ export default function ReportsScreen() {
               </View>
             </Card>
 
-            {/* Top earners */}
             {data.topEarners.length > 0 && (
               <>
                 <SectionHeader title="Hours by Staff" />
@@ -143,9 +157,9 @@ export default function ReportsScreen() {
                       <Avatar name={emp.name} size={36} color={Colors.primary} />
                       <View style={styles.earnerInfo}>
                         <Text style={styles.earnerName}>{emp.name}</Text>
-                        <Text style={styles.earnerHours}>{formatHours(emp.hours)}</Text>
+                        <Text style={styles.earnerHours}>{formatHours(emp.minutes)}</Text>
                       </View>
-                      <Text style={styles.earnerAmount}>{formatCurrency(emp.amount)}</Text>
+                      <Text style={styles.earnerAmount}>{formatCurrency(emp.wages)}</Text>
                     </View>
                   </Card>
                 ))}

@@ -16,12 +16,14 @@ import { useToast } from '@/components/ui/Toast';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
 import { formatDate, formatTime, formatHours, fullName } from '@/lib/format';
 
+type FilterType = 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'ALL';
+
 export default function ApprovalsScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { user, organization } = useAuthStore();
-  const [filter, setFilter] = useState<'submitted' | 'approved' | 'rejected' | 'all'>('submitted');
+  const [filter, setFilter] = useState<FilterType>('SUBMITTED');
   const [selected, setSelected] = useState<any>(null);
 
   const { data: timesheets = [], isLoading, refetch, isRefetching } = useQuery({
@@ -30,11 +32,24 @@ export default function ApprovalsScreen() {
       if (!organization?.id) return [];
       let q = supabase
         .from('timesheets')
-        .select('*, profiles(first_name, last_name, avatar_url), shifts(title, start_time, end_time)')
+        .select('*, shifts(title, shift_date, start_at, end_at)')
         .eq('organization_id', organization.id);
-      if (filter !== 'all') q = q.eq('status', filter);
-      const { data } = await q.order('created_at', { ascending: true }).limit(100);
-      return data ?? [];
+      if (filter !== 'ALL') q = q.eq('status', filter);
+      const { data: tsData } = await q.order('created_at', { ascending: true }).limit(100);
+      if (!tsData || tsData.length === 0) return [];
+
+      // Fetch profiles separately (no direct FK from employee_user_id to profiles.user_id)
+      const userIds = [...new Set(tsData.map((t) => t.employee_user_id).filter(Boolean))];
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, avatar_url')
+        .in('user_id', userIds);
+      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+
+      return tsData.map((ts) => ({
+        ...ts,
+        profile: profileMap[ts.employee_user_id] ?? null,
+      }));
     },
     enabled: !!organization?.id,
   });
@@ -43,11 +58,7 @@ export default function ApprovalsScreen() {
     mutationFn: async (id: string) => {
       const { error } = await supabase
         .from('timesheets')
-        .update({
-          status: 'approved',
-          approved_by_user_id: user!.id,
-          approved_at: new Date().toISOString(),
-        })
+        .update({ status: 'APPROVED', approved_by_user_id: user!.id, approved_at: new Date().toISOString() })
         .eq('id', id)
         .eq('organization_id', organization!.id);
       if (error) throw error;
@@ -64,7 +75,7 @@ export default function ApprovalsScreen() {
     mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
       const { error } = await supabase
         .from('timesheets')
-        .update({ status: 'rejected', rejected_reason: reason })
+        .update({ status: 'REJECTED', rejection_reason: reason })
         .eq('id', id)
         .eq('organization_id', organization!.id);
       if (error) throw error;
@@ -77,47 +88,51 @@ export default function ApprovalsScreen() {
     onError: () => toast.error('Failed to reject timesheet'),
   });
 
+  const pendingCount = timesheets.filter((t: any) => t.status === 'SUBMITTED').length;
+
   const renderItem = ({ item }: { item: any }) => (
     <Card style={styles.card} onPress={() => setSelected(item)}>
       <View style={styles.cardHeader}>
-        <Avatar
-          name={fullName(item.profiles?.first_name, item.profiles?.last_name)}
-          url={item.profiles?.avatar_url}
-          size={40}
-          color={Colors.primary}
-        />
+        <Avatar name={fullName(item.profile?.full_name)} url={item.profile?.avatar_url} size={40} color={Colors.primary} />
         <View style={styles.cardInfo}>
-          <Text style={styles.cardName}>{fullName(item.profiles?.first_name, item.profiles?.last_name)}</Text>
+          <Text style={styles.cardName}>{fullName(item.profile?.full_name)}</Text>
           <Text style={styles.cardMeta}>
-            {item.shifts?.title ?? 'Manual entry'} · {formatDate(item.start_time, 'dd MMM yyyy')}
+            {item.shifts?.title ?? 'Manual entry'}
+            {item.shifts?.shift_date ? ` · ${formatDate(item.shifts.shift_date, 'dd MMM yyyy')}` : ''}
           </Text>
-          <Text style={styles.cardTime}>{formatTime(item.start_time)} – {formatTime(item.end_time)}{item.total_hours ? ` · ${formatHours(item.total_hours)}` : ''}</Text>
+          {item.shifts?.start_at && (
+            <Text style={styles.cardTime}>
+              {formatTime(item.shifts.start_at)} – {item.shifts?.end_at ? formatTime(item.shifts.end_at) : '—'}
+            </Text>
+          )}
         </View>
         <Badge label={item.status} status={item.status} size="sm" />
       </View>
     </Card>
   );
 
+  const filters: FilterType[] = ['SUBMITTED', 'APPROVED', 'REJECTED', 'ALL'];
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Text style={styles.title}>Approvals</Text>
-        {timesheets.filter((t: any) => t.status === 'submitted').length > 0 && (
+        {pendingCount > 0 && (
           <View style={styles.badge}>
-            <Text style={styles.badgeText}>{timesheets.filter((t: any) => t.status === 'submitted').length}</Text>
+            <Text style={styles.badgeText}>{pendingCount}</Text>
           </View>
         )}
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll} contentContainerStyle={styles.filterRow}>
-        {(['submitted', 'approved', 'rejected', 'all'] as const).map((f) => (
+        {filters.map((f) => (
           <TouchableOpacity
             key={f}
             style={[styles.filterTab, filter === f && styles.filterTabActive]}
             onPress={() => setFilter(f)}
           >
             <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-              {f.charAt(0).toUpperCase() + f.slice(1)}
+              {f === 'ALL' ? 'All' : f.charAt(0) + f.slice(1).toLowerCase()}
             </Text>
           </TouchableOpacity>
         ))}
@@ -136,8 +151,8 @@ export default function ApprovalsScreen() {
           ListEmptyComponent={
             <EmptyState
               icon="checkmark-circle-outline"
-              title={filter === 'submitted' ? 'No pending approvals' : 'No timesheets found'}
-              description={filter === 'submitted' ? "You're all caught up!" : `No ${filter} timesheets.`}
+              title={filter === 'SUBMITTED' ? 'No pending approvals' : 'No timesheets found'}
+              description={filter === 'SUBMITTED' ? "You're all caught up!" : `No ${filter.toLowerCase()} timesheets.`}
             />
           }
         />
@@ -149,7 +164,7 @@ export default function ApprovalsScreen() {
             timesheet={selected}
             onClose={() => setSelected(null)}
             onApprove={() => approveMutation.mutate(selected.id)}
-            onReject={(reason) => rejectMutation.mutate({ id: selected.id, reason })}
+            onReject={(reason: string) => rejectMutation.mutate({ id: selected.id, reason })}
             approving={approveMutation.isPending}
             rejecting={rejectMutation.isPending}
           />
@@ -163,7 +178,7 @@ function ApprovalDetailModal({ timesheet, onClose, onApprove, onReject, approvin
   const insets = useSafeAreaInsets();
   const [rejectReason, setRejectReason] = useState('');
   const [showReject, setShowReject] = useState(false);
-  const isPending = timesheet.status === 'submitted';
+  const isPending = timesheet.status === 'SUBMITTED';
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
@@ -177,9 +192,9 @@ function ApprovalDetailModal({ timesheet, onClose, onApprove, onReject, approvin
         </View>
 
         <View style={styles.employeeRow}>
-          <Avatar name={fullName(timesheet.profiles?.first_name, timesheet.profiles?.last_name)} url={timesheet.profiles?.avatar_url} size={48} color={Colors.primary} />
+          <Avatar name={fullName(timesheet.profile?.full_name)} url={timesheet.profile?.avatar_url} size={48} color={Colors.primary} />
           <View style={styles.employeeInfo}>
-            <Text style={styles.employeeName}>{fullName(timesheet.profiles?.first_name, timesheet.profiles?.last_name)}</Text>
+            <Text style={styles.employeeName}>{fullName(timesheet.profile?.full_name)}</Text>
             <Badge label={timesheet.status} status={timesheet.status} size="sm" />
           </View>
         </View>
@@ -187,14 +202,11 @@ function ApprovalDetailModal({ timesheet, onClose, onApprove, onReject, approvin
         <Divider margin="sm" />
 
         <View style={styles.detailGrid}>
-          <DetailItem label="Date" value={formatDate(timesheet.start_time, 'EEEE, dd MMMM yyyy')} />
-          <DetailItem label="Start time" value={formatTime(timesheet.start_time)} />
-          <DetailItem label="End time" value={formatTime(timesheet.end_time)} />
-          {timesheet.break_minutes != null && <DetailItem label="Break" value={`${timesheet.break_minutes} minutes`} />}
-          {timesheet.total_hours != null && <DetailItem label="Total hours" value={formatHours(timesheet.total_hours)} highlight />}
           {timesheet.shifts?.title && <DetailItem label="Shift" value={timesheet.shifts.title} />}
-          {timesheet.notes && <DetailItem label="Notes" value={timesheet.notes} />}
-          {timesheet.rejected_reason && <DetailItem label="Rejection reason" value={timesheet.rejected_reason} danger />}
+          {timesheet.shifts?.shift_date && <DetailItem label="Date" value={formatDate(timesheet.shifts.shift_date, 'EEEE, dd MMMM yyyy')} />}
+          {timesheet.shifts?.start_at && <DetailItem label="Start time" value={formatTime(timesheet.shifts.start_at)} />}
+          {timesheet.shifts?.end_at && <DetailItem label="End time" value={formatTime(timesheet.shifts.end_at)} />}
+          {timesheet.rejection_reason && <DetailItem label="Rejection reason" value={timesheet.rejection_reason} danger />}
         </View>
 
         {isPending && !showReject && (

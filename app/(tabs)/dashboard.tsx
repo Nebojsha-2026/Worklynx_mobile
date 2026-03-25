@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '@/store/authStore';
 import { Colors, FontSize, FontWeight, Spacing } from '@/lib/theme';
@@ -17,22 +17,23 @@ export default function DashboardScreen() {
   const { profile, role, organization, isPlatformAdmin } = useAuthStore();
 
   const displayRole = isPlatformAdmin ? 'admin' : role;
-  const name = fullName(profile?.first_name, profile?.last_name);
+  // FIX: profile.full_name (single field, no first_name/last_name)
+  const name = fullName(profile?.full_name);
 
   function renderDashboard() {
     if (isPlatformAdmin) return <ManagerDashboard />;
+    // FIX: roles are uppercase
     switch (role) {
-      case 'employee': return <EmployeeDashboard />;
-      case 'manager': return <ManagerDashboard />;
-      case 'business_manager': return <BmDashboard />;
-      case 'business_owner': return <BoDashboard />;
+      case 'EMPLOYEE': return <EmployeeDashboard />;
+      case 'MANAGER': return <ManagerDashboard />;
+      case 'BM': return <BmDashboard />;
+      case 'BO': return <BoDashboard />;
       default: return <EmployeeDashboard />;
     }
   }
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.greeting}>Good {getGreeting()}</Text>
@@ -46,7 +47,6 @@ export default function DashboardScreen() {
           <Avatar name={name} url={profile?.avatar_url} size={44} color={roleColor(displayRole)} />
         </View>
       </View>
-
       {renderDashboard()}
     </View>
   );
@@ -60,10 +60,7 @@ function getGreeting() {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: Colors.bg,
-  },
+  screen: { flex: 1, backgroundColor: Colors.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -73,26 +70,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
-  headerLeft: {
-    flex: 1,
-  },
-  greeting: {
-    fontSize: FontSize.sm,
-    color: Colors.textMuted,
-  },
-  name: {
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.bold,
-    color: Colors.textPrimary,
-    marginTop: 2,
-  },
-  orgName: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  headerRight: {
-    alignItems: 'flex-end',
-    gap: Spacing.xs,
-  },
+  headerLeft: { flex: 1 },
+  greeting: { fontSize: FontSize.sm, color: Colors.textMuted },
+  name: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.textPrimary, marginTop: 2 },
+  orgName: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  headerRight: { alignItems: 'flex-end', gap: Spacing.xs },
 });

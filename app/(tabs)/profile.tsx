@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
@@ -13,27 +13,22 @@ import { Badge } from '@/components/ui/Badge';
 import { Divider } from '@/components/ui/Divider';
 import { useToast } from '@/components/ui/Toast';
 import { signOut } from '@/hooks/useAuth';
-import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
+import { Colors, FontSize, FontWeight, Spacing } from '@/lib/theme';
 import { roleLabel, roleColor } from '@/lib/theme';
 import { fullName } from '@/lib/format';
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
-  const queryClient = useQueryClient();
   const { user, profile, role, organization, orgMember, reset } = useAuthStore();
   const [editing, setEditing] = useState(false);
-  const [firstName, setFirstName] = useState(profile?.first_name ?? '');
-  const [lastName, setLastName] = useState(profile?.last_name ?? '');
+  const [displayName, setDisplayName] = useState(profile?.full_name ?? '');
   const [phone, setPhone] = useState(profile?.phone ?? '');
-  const [address, setAddress] = useState(profile?.address ?? '');
 
   useEffect(() => {
     if (profile) {
-      setFirstName(profile.first_name ?? '');
-      setLastName(profile.last_name ?? '');
+      setDisplayName(profile.full_name ?? '');
       setPhone(profile.phone ?? '');
-      setAddress(profile.address ?? '');
     }
   }, [profile]);
 
@@ -41,18 +36,15 @@ export default function ProfileScreen() {
     mutationFn: async () => {
       const { error } = await supabase
         .from('profiles')
-        .update({ first_name: firstName.trim(), last_name: lastName.trim(), phone: phone.trim(), address: address.trim(), updated_at: new Date().toISOString() })
-        .eq('id', user!.id);
+        .update({ full_name: displayName.trim(), phone: phone.trim(), updated_at: new Date().toISOString() })
+        .eq('user_id', user!.id);
       if (error) throw error;
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success('Profile updated');
-      queryClient.invalidateQueries({ queryKey: ['profile'] });
       setEditing(false);
-      // Refresh auth store profile
-      supabase.from('profiles').select('*').eq('id', user!.id).single().then(({ data }) => {
-        if (data) useAuthStore.getState().setProfile(data);
-      });
+      const { data } = await supabase.from('profiles').select('*').eq('user_id', user!.id).single();
+      if (data) useAuthStore.getState().setProfile(data);
     },
     onError: (err: any) => toast.error('Failed to update', err?.message),
   });
@@ -75,7 +67,7 @@ export default function ProfileScreen() {
     ]);
   }
 
-  const name = fullName(profile?.first_name, profile?.last_name);
+  const name = fullName(profile?.full_name);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -87,7 +79,6 @@ export default function ProfileScreen() {
       </View>
 
       <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + Spacing.xl }]} showsVerticalScrollIndicator={false}>
-        {/* Profile Header */}
         <View style={styles.profileHeader}>
           <Avatar name={name} url={profile?.avatar_url} size={80} color={roleColor(role)} />
           <View style={styles.profileInfo}>
@@ -100,16 +91,11 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Edit / View */}
         {editing ? (
           <Card style={styles.editCard}>
             <Text style={styles.sectionTitle}>Edit Profile</Text>
-            <View style={styles.nameRow}>
-              <Input label="First name" value={firstName} onChangeText={setFirstName} autoCapitalize="words" containerStyle={styles.halfInput} />
-              <Input label="Last name" value={lastName} onChangeText={setLastName} autoCapitalize="words" containerStyle={styles.halfInput} />
-            </View>
+            <Input label="Full name" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" />
             <Input label="Phone" value={phone} onChangeText={setPhone} keyboardType="phone-pad" leftIcon="call-outline" placeholder="+61 4xx xxx xxx" />
-            <Input label="Address" value={address} onChangeText={setAddress} leftIcon="location-outline" placeholder="Your address" />
             <View style={styles.editActions}>
               <Button title="Cancel" variant="secondary" onPress={() => setEditing(false)} style={{ flex: 1 }} />
               <Button title="Save Changes" onPress={() => saveMutation.mutate()} loading={saveMutation.isPending} style={{ flex: 1 }} />
@@ -120,25 +106,19 @@ export default function ProfileScreen() {
             <Text style={styles.sectionTitle}>Personal Details</Text>
             <InfoRow icon="mail-outline" label="Email" value={user?.email ?? '—'} />
             <InfoRow icon="call-outline" label="Phone" value={profile?.phone ?? '—'} />
-            <InfoRow icon="location-outline" label="Address" value={profile?.address ?? '—'} />
-            {orgMember?.position && <InfoRow icon="briefcase-outline" label="Position" value={orgMember.position} />}
-            {orgMember?.department && <InfoRow icon="business-outline" label="Department" value={orgMember.department} />}
             {orgMember?.start_date && <InfoRow icon="calendar-outline" label="Start date" value={orgMember.start_date} />}
+            {orgMember?.hourly_rate && <InfoRow icon="cash-outline" label="Hourly rate" value={`$${orgMember.hourly_rate}`} />}
           </Card>
         )}
 
-        {/* Organisation */}
         {organization && (
           <Card style={styles.orgCard}>
             <Text style={styles.sectionTitle}>Organisation</Text>
             <InfoRow icon="business-outline" label="Name" value={organization.name} />
-            {organization.abn && <InfoRow icon="document-text-outline" label="ABN" value={organization.abn} />}
-            {organization.phone && <InfoRow icon="call-outline" label="Phone" value={organization.phone} />}
-            {organization.address && <InfoRow icon="location-outline" label="Address" value={organization.address} />}
+            {organization.currency_code && <InfoRow icon="cash-outline" label="Currency" value={organization.currency_code} />}
           </Card>
         )}
 
-        {/* Security */}
         <Card style={styles.secCard}>
           <Text style={styles.sectionTitle}>Security</Text>
           <TouchableOpacity style={styles.secRow}>
@@ -154,7 +134,6 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </Card>
 
-        {/* Sign Out */}
         <Button
           title="Sign Out"
           variant="danger"
@@ -194,8 +173,6 @@ const styles = StyleSheet.create({
   badgeRow: { flexDirection: 'row', gap: Spacing.xs, flexWrap: 'wrap' },
   editCard: { gap: Spacing.sm },
   sectionTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.textPrimary, marginBottom: Spacing.xs },
-  nameRow: { flexDirection: 'row', gap: Spacing.sm },
-  halfInput: { flex: 1 },
   editActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.xs },
   detailsCard: { gap: Spacing.md },
   orgCard: { gap: Spacing.md },
