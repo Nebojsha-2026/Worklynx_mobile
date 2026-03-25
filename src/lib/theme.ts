@@ -1,8 +1,8 @@
 export const Colors = {
-  // Brand
-  primary: '#3B82F6',       // blue-500
-  primaryDark: '#1D4ED8',   // blue-700
-  primaryLight: '#DBEAFE',  // blue-100
+  // Brand — matches web platform --brand: #6d28d9 (violet-700)
+  primary: '#6D28D9',
+  primaryDark: '#5B21B6',   // violet-800
+  primaryLight: '#EDE9FE',  // violet-100
 
   // Status
   success: '#10B981',       // emerald-500
@@ -14,7 +14,7 @@ export const Colors = {
   info: '#6366F1',          // indigo-500
   infoLight: '#E0E7FF',
 
-  // Neutrals (dark theme primary)
+  // Neutrals (dark theme)
   bg: '#0F172A',            // slate-900
   bgCard: '#1E293B',        // slate-800
   bgInput: '#334155',       // slate-700
@@ -29,14 +29,14 @@ export const Colors = {
 
   // Role colours
   roleEmployee: '#10B981',
-  roleManager: '#3B82F6',
+  roleManager: '#6D28D9',
   roleBM: '#8B5CF6',
   roleBO: '#F59E0B',
   roleAdmin: '#EF4444',
 
   // Shift status
   statusDraft: '#64748B',
-  statusPublished: '#3B82F6',
+  statusPublished: '#6D28D9',
   statusCompleted: '#10B981',
   statusCancelled: '#EF4444',
 

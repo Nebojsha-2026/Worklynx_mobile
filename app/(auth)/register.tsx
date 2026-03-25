@@ -6,6 +6,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Image,
   TouchableOpacity,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -68,15 +69,16 @@ export default function RegisterScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backText}>← Back</Text>
         </TouchableOpacity>
 
         <View style={styles.logoWrap}>
-          <View style={styles.logoMark}>
-            <Text style={styles.logoLetter}>W</Text>
-          </View>
+          <Image
+            source={require('../../assets/icon.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
           <Text style={styles.logoText}>WorkLynx</Text>
         </View>
 
@@ -166,16 +168,12 @@ const styles = StyleSheet.create({
   backBtn: { marginBottom: Spacing.lg },
   backText: { color: Colors.primary, fontSize: FontSize.base, fontWeight: FontWeight.medium },
   logoWrap: { alignItems: 'center', marginBottom: Spacing.lg },
-  logoMark: {
-    width: 56,
-    height: 56,
+  logoImage: {
+    width: 64,
+    height: 64,
     borderRadius: 16,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginBottom: Spacing.xs,
   },
-  logoLetter: { fontSize: 28, fontWeight: FontWeight.bold, color: '#FFF' },
   logoText: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   heading: { fontSize: FontSize['2xl'], fontWeight: FontWeight.bold, color: Colors.textPrimary, marginBottom: 4 },
   subheading: { fontSize: FontSize.base, color: Colors.textSecondary, marginBottom: Spacing.lg },
