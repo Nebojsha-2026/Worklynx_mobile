@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { useToast } from '@/components/ui/Toast';
 import { signIn } from '@/hooks/useAuth';
-import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
+import { Colors, FontSize, FontWeight, Spacing } from '@/lib/theme';
 import { supabase } from '@/lib/supabase';
 
 export default function LoginScreen() {
@@ -43,7 +43,6 @@ export default function LoginScreen() {
       await signIn(email.trim().toLowerCase(), password);
       // Auth listener in _layout.tsx will handle redirect
     } catch (err: any) {
-      // Check for MFA required
       if (err?.message?.includes('mfa') || err?.message?.includes('factor')) {
         router.push('/(auth)/verify-mfa');
       } else {
@@ -67,9 +66,11 @@ export default function LoginScreen() {
       >
         {/* Logo */}
         <View style={styles.logoWrap}>
-          <View style={styles.logoMark}>
-            <Text style={styles.logoLetter}>W</Text>
-          </View>
+          <Image
+            source={require('../../assets/icon.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
           <Text style={styles.logoText}>WorkLynx</Text>
           <Text style={styles.tagline}>Timesheet & Workforce Management</Text>
         </View>
@@ -144,24 +145,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.xl + 8,
   },
-  logoMark: {
-    width: 72,
-    height: 72,
+  logoImage: {
+    width: 80,
+    height: 80,
     borderRadius: 20,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginBottom: Spacing.sm,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  logoLetter: {
-    fontSize: 36,
-    fontWeight: FontWeight.bold,
-    color: '#FFFFFF',
   },
   logoText: {
     fontSize: FontSize['2xl'],
