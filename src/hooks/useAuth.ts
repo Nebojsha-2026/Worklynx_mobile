@@ -16,6 +16,9 @@ export function useAuthListener() {
       } else {
         setIsLoading(false);
       }
+    }).catch((err) => {
+      console.warn('getSession error:', err);
+      setIsLoading(false);
     });
 
     // Listen for auth changes
