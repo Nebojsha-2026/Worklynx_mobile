@@ -26,8 +26,8 @@ export default function TeamScreen() {
   const [selectedMember, setSelectedMember] = useState<any>(null);
   const [showInvite, setShowInvite] = useState(false);
 
-  const isBO = role === 'business_owner';
-  const isBM = role === 'business_manager';
+  const isBO = role === 'BO';
+  const isBM = role === 'BM';
 
   const { data: members = [], isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['team-members', organization?.id],
@@ -35,7 +35,7 @@ export default function TeamScreen() {
       if (!organization?.id) return [];
       const { data } = await supabase
         .from('org_members')
-        .select('*, profiles(id, first_name, last_name, email, phone, avatar_url)')
+        .select('*, profiles(user_id, full_name, phone, avatar_url)')
         .eq('organization_id', organization.id)
         .order('role')
         .order('created_at');
@@ -45,17 +45,16 @@ export default function TeamScreen() {
   });
 
   const filtered = members.filter((m: any) => {
-    const name = fullName(m.profiles?.first_name, m.profiles?.last_name).toLowerCase();
-    const email = (m.profiles?.email ?? '').toLowerCase();
+    const name = fullName(m.profiles?.full_name).toLowerCase();
     const q = search.toLowerCase();
-    return !q || name.includes(q) || email.includes(q);
+    return !q || name.includes(q);
   });
 
   const deactivateMutation = useMutation({
     mutationFn: async (memberId: string) => {
       const { error } = await supabase
         .from('org_members')
-        .update({ status: 'inactive' })
+        .update({ is_active: false })
         .eq('id', memberId)
         .eq('organization_id', organization!.id);
       if (error) throw error;
@@ -71,18 +70,16 @@ export default function TeamScreen() {
     <Card style={styles.card} onPress={() => setSelectedMember(item)}>
       <View style={styles.memberRow}>
         <Avatar
-          name={fullName(item.profiles?.first_name, item.profiles?.last_name)}
+          name={fullName(item.profiles?.full_name)}
           url={item.profiles?.avatar_url}
           size={44}
           color={roleColor(item.role)}
         />
         <View style={styles.memberInfo}>
-          <Text style={styles.memberName}>{fullName(item.profiles?.first_name, item.profiles?.last_name)}</Text>
-          <Text style={styles.memberEmail} numberOfLines={1}>{item.profiles?.email ?? '—'}</Text>
+          <Text style={styles.memberName}>{fullName(item.profiles?.full_name)}</Text>
           <View style={styles.memberMeta}>
             <Badge label={roleLabel(item.role)} color={roleColor(item.role)} size="sm" />
-            {item.status !== 'active' && <Badge label={item.status} status={item.status} size="sm" />}
-            {item.position && <Text style={styles.positionText}>{item.position}</Text>}
+            {!item.is_active && <Badge label="Inactive" status="inactive" size="sm" />}
           </View>
         </View>
         <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -142,7 +139,6 @@ export default function TeamScreen() {
         />
       )}
 
-      {/* Member Detail Modal */}
       <Modal visible={!!selectedMember} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSelectedMember(null)}>
         {selectedMember && (
           <MemberDetailModal
@@ -155,7 +151,6 @@ export default function TeamScreen() {
         )}
       </Modal>
 
-      {/* Invite Modal */}
       <Modal visible={showInvite} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowInvite(false)}>
         <InviteModal orgId={organization?.id ?? ''} onClose={() => setShowInvite(false)} />
       </Modal>
@@ -165,7 +160,7 @@ export default function TeamScreen() {
 
 function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canManage }: any) {
   const insets = useSafeAreaInsets();
-  const name = fullName(member.profiles?.first_name, member.profiles?.last_name);
+  const name = fullName(member.profiles?.full_name);
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
@@ -181,21 +176,19 @@ function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canMan
           <Text style={styles.profileName}>{name}</Text>
           <View style={styles.profileBadges}>
             <Badge label={roleLabel(member.role)} color={roleColor(member.role)} />
-            <Badge label={member.status} status={member.status} />
+            {!member.is_active && <Badge label="Inactive" status="inactive" />}
           </View>
         </View>
 
         <Divider margin="sm" />
 
         <View style={styles.detailList}>
-          {member.profiles?.email && <DetailRow icon="mail-outline" label="Email" value={member.profiles.email} />}
           {member.profiles?.phone && <DetailRow icon="call-outline" label="Phone" value={member.profiles.phone} />}
-          {member.position && <DetailRow icon="briefcase-outline" label="Position" value={member.position} />}
-          {member.department && <DetailRow icon="business-outline" label="Department" value={member.department} />}
           {member.start_date && <DetailRow icon="calendar-outline" label="Start date" value={formatDate(member.start_date)} />}
+          {member.hourly_rate && <DetailRow icon="cash-outline" label="Hourly rate" value={`$${member.hourly_rate}`} />}
         </View>
 
-        {canManage && member.status === 'active' && (
+        {canManage && member.is_active && (
           <Button
             title="Deactivate Member"
             variant="danger"
@@ -216,14 +209,14 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'employee' | 'manager' | 'business_manager'>('employee');
+  const [inviteRole, setInviteRole] = useState<'EMPLOYEE' | 'MANAGER' | 'BM'>('EMPLOYEE');
   const [loading, setLoading] = useState(false);
 
   const roles = [
-    { value: 'employee', label: 'Employee' },
-    { value: 'manager', label: 'Manager' },
-    { value: 'business_manager', label: 'Business Manager' },
-  ] as const;
+    { value: 'EMPLOYEE' as const, label: 'Employee' },
+    { value: 'MANAGER' as const, label: 'Manager' },
+    { value: 'BM' as const, label: 'Business Manager' },
+  ];
 
   async function handleInvite() {
     if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -238,10 +231,10 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
 
       const { error } = await supabase.from('invites').insert({
         organization_id: orgId,
-        email: email.trim().toLowerCase(),
-        role,
+        invited_email: email.trim().toLowerCase(),
+        invited_role: inviteRole,
         token,
-        invited_by: user?.id,
+        invited_by_user_id: user?.id,
         expires_at: expires.toISOString(),
       });
       if (error) throw error;
@@ -283,13 +276,13 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
         {roles.map((r) => (
           <TouchableOpacity
             key={r.value}
-            style={[styles.roleOption, role === r.value && styles.roleOptionActive]}
-            onPress={() => setRole(r.value)}
+            style={[styles.roleOption, inviteRole === r.value && styles.roleOptionActive]}
+            onPress={() => setInviteRole(r.value)}
           >
-            <View style={[styles.radioCircle, role === r.value && styles.radioActive]}>
-              {role === r.value && <View style={styles.radioInner} />}
+            <View style={[styles.radioCircle, inviteRole === r.value && styles.radioActive]}>
+              {inviteRole === r.value && <View style={styles.radioInner} />}
             </View>
-            <Text style={[styles.roleLabel, role === r.value && styles.roleLabelActive]}>{r.label}</Text>
+            <Text style={[styles.roleLabelText, inviteRole === r.value && styles.roleLabelActive]}>{r.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -325,9 +318,7 @@ const styles = StyleSheet.create({
   memberRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   memberInfo: { flex: 1 },
   memberName: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.textPrimary },
-  memberEmail: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 1 },
   memberMeta: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: Spacing.xs, flexWrap: 'wrap' },
-  positionText: { fontSize: FontSize.xs, color: Colors.textMuted },
   modal: { flex: 1, backgroundColor: Colors.bgCard, paddingHorizontal: Spacing.md },
   modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.md },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.lg },
@@ -350,6 +341,6 @@ const styles = StyleSheet.create({
   radioCircle: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center' },
   radioActive: { borderColor: Colors.primary },
   radioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.primary },
-  roleLabel: { fontSize: FontSize.base, color: Colors.textSecondary },
+  roleLabelText: { fontSize: FontSize.base, color: Colors.textSecondary },
   roleLabelActive: { color: Colors.textPrimary, fontWeight: FontWeight.medium },
 });

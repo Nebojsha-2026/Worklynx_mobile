@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Modal, ScrollView, TextInput } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Modal, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,12 +14,14 @@ import { useToast } from '@/components/ui/Toast';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
 import { formatDate, formatTime, formatHours } from '@/lib/format';
 
+type FilterType = 'ALL' | 'OPEN' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+
 export default function TimesheetsScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const queryClient = useQueryClient();
   const { user, organization } = useAuthStore();
-  const [filter, setFilter] = useState<'draft' | 'submitted' | 'approved' | 'all'>('all');
+  const [filter, setFilter] = useState<FilterType>('ALL');
   const [selected, setSelected] = useState<any>(null);
 
   const { data: timesheets = [], isLoading, refetch, isRefetching } = useQuery({
@@ -28,11 +30,11 @@ export default function TimesheetsScreen() {
       if (!user?.id || !organization?.id) return [];
       let q = supabase
         .from('timesheets')
-        .select('*, shifts(title)')
-        .eq('user_id', user.id)
+        .select('*, shifts(title, shift_date, start_at, end_at), time_entries(clock_in, clock_out, break_minutes)')
+        .eq('employee_user_id', user.id)
         .eq('organization_id', organization.id);
-      if (filter !== 'all') q = q.eq('status', filter);
-      const { data } = await q.order('start_time', { ascending: false }).limit(50);
+      if (filter !== 'ALL') q = q.eq('status', filter);
+      const { data } = await q.order('created_at', { ascending: false }).limit(50);
       return data ?? [];
     },
     enabled: !!user?.id && !!organization?.id,
@@ -42,9 +44,9 @@ export default function TimesheetsScreen() {
     mutationFn: async (id: string) => {
       const { error } = await supabase
         .from('timesheets')
-        .update({ status: 'submitted' })
+        .update({ status: 'SUBMITTED' })
         .eq('id', id)
-        .eq('user_id', user!.id);
+        .eq('employee_user_id', user!.id);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -55,34 +57,36 @@ export default function TimesheetsScreen() {
     onError: () => toast.error('Failed to submit timesheet'),
   });
 
-  const renderItem = ({ item }: { item: any }) => (
-    <Card style={styles.card} onPress={() => setSelected(item)}>
-      <View style={styles.cardHeader}>
-        <View style={styles.cardLeft}>
-          <Text style={styles.cardTitle}>
-            {item.shifts?.title ?? formatDate(item.start_time, 'EEE, dd MMM')}
-          </Text>
-          <Text style={styles.cardDate}>{formatDate(item.start_time, 'dd MMM yyyy')}</Text>
-        </View>
-        <View style={styles.cardRight}>
+  const renderItem = ({ item }: { item: any }) => {
+    const shiftDate = item.shifts?.shift_date;
+    const startAt = item.shifts?.start_at;
+    const endAt = item.shifts?.end_at;
+    return (
+      <Card style={styles.card} onPress={() => setSelected(item)}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardLeft}>
+            <Text style={styles.cardTitle}>
+              {item.shifts?.title ?? (shiftDate ? formatDate(shiftDate) : 'Manual entry')}
+            </Text>
+            <Text style={styles.cardDate}>
+              {shiftDate ? formatDate(shiftDate, 'dd MMM yyyy') : formatDate(item.created_at, 'dd MMM yyyy')}
+            </Text>
+          </View>
           <Badge label={item.status} status={item.status} size="sm" />
-          {item.total_hours && (
-            <Text style={styles.hours}>{formatHours(item.total_hours)}</Text>
-          )}
         </View>
-      </View>
-      <View style={styles.timeRow}>
-        <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
-        <Text style={styles.timeText}>{formatTime(item.start_time)} – {formatTime(item.end_time)}</Text>
-        {item.break_minutes && (
-          <Text style={styles.breakText}>· {item.break_minutes}min break</Text>
+        {(startAt || endAt) && (
+          <View style={styles.timeRow}>
+            <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
+            <Text style={styles.timeText}>
+              {startAt ? formatTime(startAt) : '—'} – {endAt ? formatTime(endAt) : '—'}
+            </Text>
+          </View>
         )}
-      </View>
-      {item.notes && (
-        <Text style={styles.notes} numberOfLines={1}>{item.notes}</Text>
-      )}
-    </Card>
-  );
+      </Card>
+    );
+  };
+
+  const filters: FilterType[] = ['ALL', 'OPEN', 'SUBMITTED', 'APPROVED', 'REJECTED'];
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -91,14 +95,14 @@ export default function TimesheetsScreen() {
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll} contentContainerStyle={styles.filterRow}>
-        {(['all', 'draft', 'submitted', 'approved'] as const).map((f) => (
+        {filters.map((f) => (
           <TouchableOpacity
             key={f}
             style={[styles.filterTab, filter === f && styles.filterTabActive]}
             onPress={() => setFilter(f)}
           >
             <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-              {f.charAt(0).toUpperCase() + f.slice(1)}
+              {f === 'ALL' ? 'All' : f.charAt(0) + f.slice(1).toLowerCase()}
             </Text>
           </TouchableOpacity>
         ))}
@@ -118,7 +122,7 @@ export default function TimesheetsScreen() {
             <EmptyState
               icon="time-outline"
               title="No timesheets"
-              description={filter === 'all' ? "Your timesheets will appear here." : `No ${filter} timesheets.`}
+              description={filter === 'ALL' ? "Your timesheets will appear here." : `No ${filter.toLowerCase()} timesheets.`}
             />
           }
         />
@@ -140,6 +144,19 @@ export default function TimesheetsScreen() {
 
 function TimesheetDetailModal({ timesheet, onClose, onSubmit, submitting }: any) {
   const insets = useSafeAreaInsets();
+  const shiftDate = timesheet.shifts?.shift_date;
+  const startAt = timesheet.shifts?.start_at;
+  const endAt = timesheet.shifts?.end_at;
+  const timeEntries: any[] = timesheet.time_entries ?? [];
+
+  const totalMinutes = timeEntries.reduce((sum: number, te: any) => {
+    if (te.clock_in && te.clock_out) {
+      const mins = (new Date(te.clock_out).getTime() - new Date(te.clock_in).getTime()) / 60000;
+      const breakMins = te.break_minutes ?? 0;
+      return sum + Math.max(0, mins - breakMins);
+    }
+    return sum;
+  }, 0);
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
@@ -155,51 +172,60 @@ function TimesheetDetailModal({ timesheet, onClose, onSubmit, submitting }: any)
         <Badge label={timesheet.status} status={timesheet.status} style={styles.statusBadge} />
 
         <View style={styles.detailGrid}>
-          <View style={styles.detailItem}>
-            <Text style={styles.detailLabel}>Date</Text>
-            <Text style={styles.detailValue}>{formatDate(timesheet.start_time, 'EEEE, dd MMMM yyyy')}</Text>
-          </View>
-          <View style={styles.detailItem}>
-            <Text style={styles.detailLabel}>Start time</Text>
-            <Text style={styles.detailValue}>{formatTime(timesheet.start_time)}</Text>
-          </View>
-          <View style={styles.detailItem}>
-            <Text style={styles.detailLabel}>End time</Text>
-            <Text style={styles.detailValue}>{formatTime(timesheet.end_time)}</Text>
-          </View>
-          {timesheet.break_minutes != null && (
-            <View style={styles.detailItem}>
-              <Text style={styles.detailLabel}>Break</Text>
-              <Text style={styles.detailValue}>{timesheet.break_minutes} minutes</Text>
-            </View>
-          )}
-          {timesheet.total_hours != null && (
-            <View style={styles.detailItem}>
-              <Text style={styles.detailLabel}>Total hours</Text>
-              <Text style={[styles.detailValue, styles.totalHours]}>{formatHours(timesheet.total_hours)}</Text>
-            </View>
-          )}
           {timesheet.shifts?.title && (
             <View style={styles.detailItem}>
               <Text style={styles.detailLabel}>Shift</Text>
               <Text style={styles.detailValue}>{timesheet.shifts.title}</Text>
             </View>
           )}
-          {timesheet.notes && (
-            <View style={[styles.detailItem, styles.fullWidth]}>
-              <Text style={styles.detailLabel}>Notes</Text>
-              <Text style={styles.detailValue}>{timesheet.notes}</Text>
+          {shiftDate && (
+            <View style={styles.detailItem}>
+              <Text style={styles.detailLabel}>Date</Text>
+              <Text style={styles.detailValue}>{formatDate(shiftDate, 'EEEE, dd MMMM yyyy')}</Text>
             </View>
           )}
-          {timesheet.rejected_reason && (
-            <View style={[styles.detailItem, styles.fullWidth, styles.rejectedBox]}>
+          {startAt && (
+            <View style={styles.detailItem}>
+              <Text style={styles.detailLabel}>Shift start</Text>
+              <Text style={styles.detailValue}>{formatTime(startAt)}</Text>
+            </View>
+          )}
+          {endAt && (
+            <View style={styles.detailItem}>
+              <Text style={styles.detailLabel}>Shift end</Text>
+              <Text style={styles.detailValue}>{formatTime(endAt)}</Text>
+            </View>
+          )}
+          {totalMinutes > 0 && (
+            <View style={styles.detailItem}>
+              <Text style={styles.detailLabel}>Total hours worked</Text>
+              <Text style={[styles.detailValue, styles.totalHours]}>{formatHours(totalMinutes)}</Text>
+            </View>
+          )}
+          {timesheet.rejection_reason && (
+            <View style={[styles.detailItem, styles.rejectedBox]}>
               <Text style={styles.rejectedLabel}>Rejection reason</Text>
-              <Text style={styles.rejectedValue}>{timesheet.rejected_reason}</Text>
+              <Text style={styles.rejectedValue}>{timesheet.rejection_reason}</Text>
             </View>
           )}
         </View>
 
-        {timesheet.status === 'draft' && (
+        {timeEntries.length > 0 && (
+          <>
+            <Text style={styles.entriesTitle}>Time Entries</Text>
+            {timeEntries.map((te: any, idx: number) => (
+              <View key={idx} style={styles.entryRow}>
+                <Ionicons name="time-outline" size={14} color={Colors.textMuted} />
+                <Text style={styles.entryText}>
+                  {te.clock_in ? formatTime(te.clock_in) : '—'} – {te.clock_out ? formatTime(te.clock_out) : 'Active'}
+                  {te.break_minutes ? `  ·  ${te.break_minutes}min break` : ''}
+                </Text>
+              </View>
+            ))}
+          </>
+        )}
+
+        {timesheet.status === 'OPEN' && (
           <Button
             title="Submit for Approval"
             onPress={onSubmit}
@@ -228,14 +254,10 @@ const styles = StyleSheet.create({
   card: { gap: Spacing.xs },
   cardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   cardLeft: { flex: 1, marginRight: Spacing.sm },
-  cardRight: { alignItems: 'flex-end', gap: 4 },
   cardTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.textPrimary },
   cardDate: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
-  hours: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: Colors.primary },
   timeRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   timeText: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  breakText: { fontSize: FontSize.sm, color: Colors.textMuted },
-  notes: { fontSize: FontSize.xs, color: Colors.textMuted, fontStyle: 'italic' },
   modal: { flex: 1, backgroundColor: Colors.bgCard, paddingHorizontal: Spacing.md },
   modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.md },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.md },
@@ -246,9 +268,11 @@ const styles = StyleSheet.create({
   detailLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: 2 },
   detailValue: { fontSize: FontSize.base, color: Colors.textPrimary },
   totalHours: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.primary },
-  fullWidth: { width: '100%' },
   rejectedBox: { backgroundColor: Colors.dangerLight + '20', borderRadius: Radius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.danger + '30' },
   rejectedLabel: { fontSize: FontSize.xs, color: Colors.danger, marginBottom: 4 },
   rejectedValue: { fontSize: FontSize.sm, color: Colors.textPrimary },
+  entriesTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, marginBottom: Spacing.xs },
+  entryRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
+  entryText: { fontSize: FontSize.sm, color: Colors.textSecondary },
   actionBtn: { marginTop: Spacing.sm },
 });

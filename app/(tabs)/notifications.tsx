@@ -34,7 +34,8 @@ export default function NotificationsScreen() {
 
   const markReadMutation = useMutation({
     mutationFn: async (id: string) => {
-      await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id);
+      // FIX: is_read boolean, not read_at timestamp
+      await supabase.from('notifications').update({ is_read: true }).eq('id', id);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
@@ -42,16 +43,18 @@ export default function NotificationsScreen() {
   const markAllReadMutation = useMutation({
     mutationFn: async () => {
       if (!user?.id) return;
+      // FIX: filter by is_read = false, update to true
       await supabase
         .from('notifications')
-        .update({ read_at: new Date().toISOString() })
+        .update({ is_read: true })
         .eq('user_id', user.id)
-        .is('read_at', null);
+        .eq('is_read', false);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
 
-  const unreadCount = notifications.filter((n: any) => !n.read_at).length;
+  // FIX: check is_read boolean, not read_at
+  const unreadCount = notifications.filter((n: any) => !n.is_read).length;
 
   const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
     if (type.includes('shift')) return 'calendar';
@@ -69,16 +72,16 @@ export default function NotificationsScreen() {
   };
 
   const renderItem = ({ item }: { item: any }) => (
-    <TouchableOpacity onPress={() => !item.read_at && markReadMutation.mutate(item.id)} activeOpacity={0.8}>
-      <Card style={[styles.card, !item.read_at && styles.cardUnread]}>
+    <TouchableOpacity onPress={() => !item.is_read && markReadMutation.mutate(item.id)} activeOpacity={0.8}>
+      <Card style={[styles.card, !item.is_read && styles.cardUnread]}>
         <View style={styles.row}>
           <View style={[styles.iconWrap, { backgroundColor: `${colorForType(item.type)}20` }]}>
             <Ionicons name={iconForType(item.type)} size={20} color={colorForType(item.type)} />
           </View>
           <View style={styles.content}>
             <View style={styles.titleRow}>
-              <Text style={[styles.notifTitle, !item.read_at && styles.notifTitleUnread]}>{item.title}</Text>
-              {!item.read_at && <View style={styles.unreadDot} />}
+              <Text style={[styles.notifTitle, !item.is_read && styles.notifTitleUnread]}>{item.title}</Text>
+              {!item.is_read && <View style={styles.unreadDot} />}
             </View>
             <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
             <Text style={styles.time}>{formatRelative(item.created_at)}</Text>

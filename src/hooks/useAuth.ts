@@ -8,7 +8,6 @@ export function useAuthListener() {
   useEffect(() => {
     setIsLoading(true);
 
-    // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) {
@@ -21,7 +20,6 @@ export function useAuthListener() {
       setIsLoading(false);
     });
 
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       setSession(session);
       if (session) {
@@ -36,16 +34,15 @@ export function useAuthListener() {
 
   async function loadUserData(userId: string) {
     try {
-      // Load profile
+      // FIX: profiles PK is user_id, not id
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', userId)
+        .eq('user_id', userId)
         .single();
 
       setProfile(profile);
 
-      // Check platform admin
       const { data: adminData } = await supabase
         .from('platform_admins')
         .select('user_id')
@@ -54,15 +51,15 @@ export function useAuthListener() {
 
       setIsPlatformAdmin(!!adminData);
 
-      // Load org membership (pick first active org)
+      // FIX: org_members uses is_active boolean, not status string
       const { data: member } = await supabase
         .from('org_members')
         .select('*, organizations(*)')
         .eq('user_id', userId)
-        .eq('status', 'active')
+        .eq('is_active', true)
         .order('created_at', { ascending: true })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       if (member) {
         const org = (member as any).organizations;
@@ -84,13 +81,11 @@ export async function signIn(email: string, password: string) {
   return data;
 }
 
-export async function signUp(email: string, password: string, firstName: string, lastName: string) {
+export async function signUp(email: string, password: string, fullName: string) {
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: {
-      data: { first_name: firstName, last_name: lastName },
-    },
+    options: { data: { full_name: fullName } },
   });
   if (error) throw error;
   return data;
@@ -116,7 +111,6 @@ export async function updatePassword(newPassword: string) {
 export async function verifyMfaTotp(code: string, factorId: string) {
   const { data: challenge } = await supabase.auth.mfa.challenge({ factorId });
   if (!challenge) throw new Error('Could not create MFA challenge');
-
   const { data, error } = await supabase.auth.mfa.verify({
     factorId,
     challengeId: challenge.id,

@@ -3,7 +3,6 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/store/authStore';
 import { Colors, FontSize } from '@/lib/theme';
-import { View, Text, StyleSheet } from 'react-native';
 
 type TabConfig = {
   name: string;
@@ -51,24 +50,22 @@ const adminTabs: TabConfig[] = [
   { name: 'profile', title: 'Profile', icon: 'person-outline', iconFocused: 'person' },
 ];
 
-function TabBarIcon({ name, focused, color }: { name: keyof typeof Ionicons.glyphMap; focused: boolean; color: string }) {
-  return <Ionicons name={name} size={22} color={color} />;
-}
-
 export default function TabsLayout() {
   const { role, isPlatformAdmin } = useAuthStore();
 
+  // FIX: DB roles are uppercase BO/BM/MANAGER/EMPLOYEE
   const tabs = isPlatformAdmin
     ? adminTabs
-    : role === 'employee'
+    : role === 'EMPLOYEE'
     ? employeeTabs
-    : role === 'manager'
+    : role === 'MANAGER'
     ? managerTabs
-    : role === 'business_manager'
+    : role === 'BM'
     ? bmTabs
-    : boTabs;
+    : role === 'BO'
+    ? boTabs
+    : employeeTabs;
 
-  // All possible screen names
   const allScreens = ['dashboard', 'shifts', 'timesheets', 'team', 'approvals', 'reports', 'billing', 'notifications', 'profile'];
   const activeNames = tabs.map((t) => t.name);
 
@@ -86,16 +83,12 @@ export default function TabsLayout() {
         },
         tabBarActiveTintColor: Colors.primary,
         tabBarInactiveTintColor: Colors.textMuted,
-        tabBarLabelStyle: {
-          fontSize: FontSize.xs,
-          fontWeight: '500',
-        },
+        tabBarLabelStyle: { fontSize: FontSize.xs, fontWeight: '500' },
       }}
     >
       {allScreens.map((screenName) => {
         const tab = tabs.find((t) => t.name === screenName);
         const isHidden = !activeNames.includes(screenName);
-
         return (
           <Tabs.Screen
             key={screenName}
@@ -104,13 +97,7 @@ export default function TabsLayout() {
               title: tab?.title ?? screenName,
               href: isHidden ? null : undefined,
               tabBarIcon: ({ focused, color }) =>
-                tab ? (
-                  <TabBarIcon
-                    name={focused ? tab.iconFocused : tab.icon}
-                    focused={focused}
-                    color={color}
-                  />
-                ) : null,
+                tab ? <Ionicons name={focused ? tab.iconFocused : tab.icon} size={22} color={color} /> : null,
             }}
           />
         );

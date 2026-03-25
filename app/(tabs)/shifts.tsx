@@ -1,124 +1,110 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Modal, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { LoadingScreen } from '@/components/ui/LoadingScreen';
-import { useToast } from '@/components/ui/Toast';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
-import { formatDate, formatTime, formatHours } from '@/lib/format';
+import { formatDate, formatTime } from '@/lib/format';
 
 type Filter = 'upcoming' | 'past' | 'all';
 
+function todayStr() {
+  return new Date().toISOString().split('T')[0]; // "YYYY-MM-DD"
+}
+
 export default function ShiftsScreen() {
   const insets = useSafeAreaInsets();
-  const toast = useToast();
-  const queryClient = useQueryClient();
-  const { user, orgMember, organization, role } = useAuthStore();
+  const { user, organization, role } = useAuthStore();
   const [filter, setFilter] = useState<Filter>('upcoming');
   const [selectedShift, setSelectedShift] = useState<any>(null);
 
-  const isManager = role === 'manager' || role === 'business_manager' || role === 'business_owner';
+  // FIX: roles are uppercase
+  const isManager = role === 'MANAGER' || role === 'BM' || role === 'BO';
 
   const { data: shifts = [], isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['shifts', user?.id, organization?.id, filter, role],
     queryFn: async () => {
       if (!organization?.id) return [];
-      const now = new Date().toISOString();
+      const today = todayStr();
 
       if (isManager) {
+        // Manager: query shifts directly, filter by shift_date
         let q = supabase
           .from('shifts')
-          .select('*, locations(name, address), shift_assignments(id, status, user_id, clock_in_time, clock_out_time, profiles(first_name, last_name))')
+          .select('*, locations(name, address), shift_assignments(id, employee_user_id)')
           .eq('organization_id', organization.id);
 
-        if (filter === 'upcoming') q = q.gte('start_time', now);
-        else if (filter === 'past') q = q.lt('end_time', now);
+        if (filter === 'upcoming') q = q.gte('shift_date', today);
+        else if (filter === 'past') q = q.lt('shift_date', today);
 
-        const { data } = await q.order('start_time', { ascending: filter !== 'past' }).limit(50);
+        const { data } = await q
+          .order('shift_date', { ascending: filter !== 'past' })
+          .order('start_at', { ascending: true })
+          .limit(50);
         return data ?? [];
       } else {
-        // Employee: only my assignments
-        let q = supabase
+        // Employee: query shift_assignments with employee_user_id (not user_id)
+        const { data } = await supabase
           .from('shift_assignments')
-          .select('*, shifts(*, locations(name, address))')
-          .eq('user_id', user!.id)
-          .eq('organization_id', organization.id);
+          .select('*, shifts(id, title, shift_date, start_at, end_at, break_minutes, description, status, organization_id, location, location_id, locations(name, address))')
+          .eq('employee_user_id', user!.id)
+          .limit(200);
 
-        if (filter === 'upcoming') q = q.gte('shifts(start_time)', now);
-        else if (filter === 'past') q = q.lt('shifts(end_time)', now);
-
-        const { data } = await q.order('shifts(start_time)', { ascending: filter !== 'past' }).limit(50);
-        return data ?? [];
+        const all = data ?? [];
+        // Filter client-side by org and date
+        const orgFiltered = all.filter((a: any) => a.shifts?.organization_id === organization.id);
+        const dateFiltered = orgFiltered.filter((a: any) => {
+          const sd = a.shifts?.shift_date;
+          if (!sd) return true;
+          if (filter === 'upcoming') return sd >= today;
+          if (filter === 'past') return sd < today;
+          return true;
+        });
+        // Sort by shift_date + start_at
+        dateFiltered.sort((a: any, b: any) => {
+          const da = `${a.shifts?.shift_date}T${a.shifts?.start_at}`;
+          const db = `${b.shifts?.shift_date}T${b.shifts?.start_at}`;
+          return filter === 'past' ? db.localeCompare(da) : da.localeCompare(db);
+        });
+        return dateFiltered.slice(0, 50);
       }
     },
-    enabled: !!organization?.id,
-  });
-
-  const clockInMutation = useMutation({
-    mutationFn: async (assignmentId: string) => {
-      const { error } = await supabase
-        .from('shift_assignments')
-        .update({ clock_in_time: new Date().toISOString(), status: 'confirmed' })
-        .eq('id', assignmentId);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      toast.success('Clocked in!');
-      queryClient.invalidateQueries({ queryKey: ['shifts'] });
-      setSelectedShift(null);
-    },
-    onError: () => toast.error('Failed to clock in'),
-  });
-
-  const clockOutMutation = useMutation({
-    mutationFn: async (assignmentId: string) => {
-      const { error } = await supabase
-        .from('shift_assignments')
-        .update({ clock_out_time: new Date().toISOString(), status: 'completed' })
-        .eq('id', assignmentId);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      toast.success('Clocked out!');
-      queryClient.invalidateQueries({ queryKey: ['shifts'] });
-      setSelectedShift(null);
-    },
-    onError: () => toast.error('Failed to clock out'),
+    enabled: !!organization?.id && !!user?.id,
   });
 
   const renderItem = ({ item }: { item: any }) => {
     if (isManager) {
       const shift = item;
+      const locationName = shift.locations?.name ?? shift.location ?? null;
       return (
         <Card style={styles.card} onPress={() => setSelectedShift({ type: 'shift', data: shift })}>
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle} numberOfLines={1}>{shift.title}</Text>
-            <Badge label={shift.status} status={shift.status} size="sm" />
+            <Text style={styles.cardTitle} numberOfLines={1}>{shift.title ?? 'Shift'}</Text>
+            <Badge label={shift.status} status={shift.status?.toLowerCase()} size="sm" />
           </View>
           <View style={styles.metaRow}>
             <Ionicons name="calendar-outline" size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{formatDate(shift.start_time, 'EEE, dd MMM yyyy')}</Text>
+            <Text style={styles.metaText}>{formatDate(shift.shift_date, 'EEE, dd MMM yyyy')}</Text>
           </View>
           <View style={styles.metaRow}>
             <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{formatTime(shift.start_time)} – {formatTime(shift.end_time)}</Text>
+            <Text style={styles.metaText}>{formatTime(shift.start_at)} – {formatTime(shift.end_at)}</Text>
           </View>
-          {shift.locations?.name && (
+          {locationName && (
             <View style={styles.metaRow}>
               <Ionicons name="location-outline" size={13} color={Colors.textMuted} />
-              <Text style={styles.metaText} numberOfLines={1}>{shift.locations.name}</Text>
+              <Text style={styles.metaText} numberOfLines={1}>{locationName}</Text>
             </View>
           )}
           <View style={styles.staffPill}>
             <Ionicons name="people-outline" size={13} color={Colors.primary} />
-            <Text style={styles.staffText}>{shift.shift_assignments?.length ?? 0}/{shift.required_staff} assigned</Text>
+            <Text style={styles.staffText}>{shift.shift_assignments?.length ?? 0} assigned</Text>
           </View>
         </Card>
       );
@@ -126,30 +112,25 @@ export default function ShiftsScreen() {
       const assignment = item;
       const shift = assignment.shifts;
       if (!shift) return null;
+      const locationName = shift.locations?.name ?? shift.location ?? null;
       return (
         <Card style={styles.card} onPress={() => setSelectedShift({ type: 'assignment', data: assignment })}>
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle} numberOfLines={1}>{shift.title}</Text>
-            <Badge label={assignment.status} status={assignment.status} size="sm" />
+            <Text style={styles.cardTitle} numberOfLines={1}>{shift.title ?? 'Shift'}</Text>
+            <Badge label={shift.status} status={shift.status?.toLowerCase()} size="sm" />
           </View>
           <View style={styles.metaRow}>
             <Ionicons name="calendar-outline" size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{formatDate(shift.start_time, 'EEE, dd MMM yyyy')}</Text>
+            <Text style={styles.metaText}>{formatDate(shift.shift_date, 'EEE, dd MMM yyyy')}</Text>
           </View>
           <View style={styles.metaRow}>
             <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{formatTime(shift.start_time)} – {formatTime(shift.end_time)}</Text>
+            <Text style={styles.metaText}>{formatTime(shift.start_at)} – {formatTime(shift.end_at)}</Text>
           </View>
-          {shift.locations?.name && (
+          {locationName && (
             <View style={styles.metaRow}>
               <Ionicons name="location-outline" size={13} color={Colors.textMuted} />
-              <Text style={styles.metaText} numberOfLines={1}>{shift.locations.name}</Text>
-            </View>
-          )}
-          {assignment.clock_in_time && !assignment.clock_out_time && (
-            <View style={styles.activeClockBanner}>
-              <Ionicons name="radio-button-on" size={12} color={Colors.success} />
-              <Text style={styles.activeClockText}>Clocked in at {formatTime(assignment.clock_in_time)}</Text>
+              <Text style={styles.metaText} numberOfLines={1}>{locationName}</Text>
             </View>
           )}
         </Card>
@@ -159,17 +140,10 @@ export default function ShiftsScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>{isManager ? 'Shifts' : 'My Shifts'}</Text>
-        {isManager && (
-          <TouchableOpacity style={styles.addBtn}>
-            <Ionicons name="add-circle" size={28} color={Colors.primary} />
-          </TouchableOpacity>
-        )}
       </View>
 
-      {/* Filter Tabs */}
       <View style={styles.filterRow}>
         {(['upcoming', 'past', 'all'] as Filter[]).map((f) => (
           <TouchableOpacity
@@ -204,38 +178,27 @@ export default function ShiftsScreen() {
         />
       )}
 
-      {/* Shift Detail Modal */}
       <Modal visible={!!selectedShift} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSelectedShift(null)}>
         {selectedShift && (
-          <ShiftDetailModal
-            shiftData={selectedShift}
-            onClose={() => setSelectedShift(null)}
-            onClockIn={(id) => clockInMutation.mutate(id)}
-            onClockOut={(id) => clockOutMutation.mutate(id)}
-            clockingIn={clockInMutation.isPending}
-            clockingOut={clockOutMutation.isPending}
-          />
+          <ShiftDetailModal shiftData={selectedShift} onClose={() => setSelectedShift(null)} />
         )}
       </Modal>
     </View>
   );
 }
 
-function ShiftDetailModal({ shiftData, onClose, onClockIn, onClockOut, clockingIn, clockingOut }: any) {
+function ShiftDetailModal({ shiftData, onClose }: any) {
   const insets = useSafeAreaInsets();
   const isAssignment = shiftData.type === 'assignment';
   const shift = isAssignment ? shiftData.data.shifts : shiftData.data;
-  const assignment = isAssignment ? shiftData.data : null;
-
-  const canClockIn = isAssignment && assignment?.status === 'assigned' || assignment?.status === 'confirmed' && !assignment?.clock_in_time;
-  const canClockOut = isAssignment && assignment?.clock_in_time && !assignment?.clock_out_time;
+  const locationName = shift?.locations?.name ?? shift?.location ?? null;
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
       <View style={styles.modalHandle} />
       <ScrollView showsVerticalScrollIndicator={false}>
         <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>{shift?.title}</Text>
+          <Text style={styles.modalTitle}>{shift?.title ?? 'Shift Details'}</Text>
           <TouchableOpacity onPress={onClose}>
             <Ionicons name="close" size={24} color={Colors.textSecondary} />
           </TouchableOpacity>
@@ -243,58 +206,18 @@ function ShiftDetailModal({ shiftData, onClose, onClockIn, onClockOut, clockingI
 
         {shift && (
           <View style={styles.detailList}>
-            <DetailRow icon="calendar-outline" label="Date" value={formatDate(shift.start_time, 'EEEE, dd MMMM yyyy')} />
-            <DetailRow icon="time-outline" label="Time" value={`${formatTime(shift.start_time)} – ${formatTime(shift.end_time)}`} />
-            {shift.locations?.name && <DetailRow icon="location-outline" label="Location" value={shift.locations.name} />}
-            {shift.locations?.address && <DetailRow icon="map-outline" label="Address" value={shift.locations.address} />}
-            {shift.break_minutes && <DetailRow icon="cafe-outline" label="Break" value={`${shift.break_minutes} min`} />}
-            {shift.notes && <DetailRow icon="document-text-outline" label="Notes" value={shift.notes} />}
+            <DetailRow icon="calendar-outline" label="Date" value={formatDate(shift.shift_date, 'EEEE, dd MMMM yyyy')} />
+            <DetailRow icon="time-outline" label="Time" value={`${formatTime(shift.start_at)} – ${formatTime(shift.end_at)}`} />
+            {locationName && <DetailRow icon="location-outline" label="Location" value={locationName} />}
+            {shift.break_minutes > 0 && <DetailRow icon="cafe-outline" label="Break" value={`${shift.break_minutes} min`} />}
+            {shift.description && <DetailRow icon="document-text-outline" label="Notes" value={shift.description} />}
           </View>
         )}
 
-        {assignment && (
-          <View style={styles.clockSection}>
-            {assignment.clock_in_time && (
-              <View style={styles.clockRow}>
-                <Text style={styles.clockLabel}>Clocked in</Text>
-                <Text style={styles.clockValue}>{formatTime(assignment.clock_in_time)}</Text>
-              </View>
-            )}
-            {assignment.clock_out_time && (
-              <View style={styles.clockRow}>
-                <Text style={styles.clockLabel}>Clocked out</Text>
-                <Text style={styles.clockValue}>{formatTime(assignment.clock_out_time)}</Text>
-              </View>
-            )}
-          </View>
-        )}
-
-        {(canClockIn || canClockOut) && (
-          <View style={styles.actionRow}>
-            {canClockIn && (
-              <Button
-                title="Clock In"
-                icon={<Ionicons name="log-in-outline" size={18} color="#FFF" />}
-                onPress={() => onClockIn(assignment.id)}
-                loading={clockingIn}
-                variant="success"
-                fullWidth
-                size="lg"
-              />
-            )}
-            {canClockOut && (
-              <Button
-                title="Clock Out"
-                icon={<Ionicons name="log-out-outline" size={18} color="#FFF" />}
-                onPress={() => onClockOut(assignment.id)}
-                loading={clockingOut}
-                variant="danger"
-                fullWidth
-                size="lg"
-              />
-            )}
-          </View>
-        )}
+        <View style={styles.timesheetNote}>
+          <Ionicons name="information-circle-outline" size={16} color={Colors.textMuted} />
+          <Text style={styles.timesheetNoteText}>Clock in/out is done via the Timesheets tab</Text>
+        </View>
       </ScrollView>
     </View>
   );
@@ -316,7 +239,6 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.bg },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border },
   title: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.textPrimary },
-  addBtn: { padding: 4 },
   filterRow: { flexDirection: 'row', paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, gap: Spacing.xs },
   filterTab: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs, borderRadius: Radius.full, backgroundColor: Colors.bgCard, borderWidth: 1, borderColor: Colors.border },
   filterTabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
@@ -330,8 +252,6 @@ const styles = StyleSheet.create({
   metaText: { fontSize: FontSize.sm, color: Colors.textSecondary },
   staffPill: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: Spacing.xs, backgroundColor: Colors.primaryLight + '20', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, alignSelf: 'flex-start' },
   staffText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.medium },
-  activeClockBanner: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
-  activeClockText: { fontSize: FontSize.xs, color: Colors.success, fontWeight: FontWeight.medium },
   modal: { flex: 1, backgroundColor: Colors.bgCard, paddingHorizontal: Spacing.md },
   modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.md },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.lg },
@@ -342,9 +262,6 @@ const styles = StyleSheet.create({
   detailContent: { flex: 1 },
   detailLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginBottom: 2 },
   detailValue: { fontSize: FontSize.base, color: Colors.textPrimary },
-  clockSection: { backgroundColor: Colors.bgInput, borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.lg, gap: Spacing.sm },
-  clockRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  clockLabel: { fontSize: FontSize.sm, color: Colors.textSecondary },
-  clockValue: { fontSize: FontSize.sm, color: Colors.textPrimary, fontWeight: FontWeight.semibold },
-  actionRow: { gap: Spacing.sm },
+  timesheetNote: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, padding: Spacing.sm, backgroundColor: Colors.bgInput, borderRadius: Radius.md },
+  timesheetNoteText: { fontSize: FontSize.sm, color: Colors.textMuted },
 });

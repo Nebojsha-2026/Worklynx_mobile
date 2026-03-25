@@ -20,15 +20,21 @@ export function ManagerDashboard() {
     queryKey: ['manager-stats', organization?.id],
     queryFn: async () => {
       if (!organization?.id) return null;
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
+      const today = new Date().toISOString().split('T')[0];
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
 
       const [shiftsRes, membersRes, timesheetsRes] = await Promise.all([
-        supabase.from('shifts').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).gte('start_time', today.toISOString()).lt('start_time', tomorrow.toISOString()).eq('status', 'published'),
-        supabase.from('org_members').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'active'),
-        supabase.from('timesheets').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'submitted'),
+        supabase.from('shifts').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .gte('shift_date', today)
+          .lt('shift_date', tomorrow)
+          .eq('status', 'PUBLISHED'),
+        supabase.from('org_members').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('is_active', true),
+        supabase.from('timesheets').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('status', 'SUBMITTED'),
       ]);
 
       return {
@@ -46,12 +52,21 @@ export function ManagerDashboard() {
       if (!organization?.id) return [];
       const { data } = await supabase
         .from('timesheets')
-        .select('*, profiles(first_name, last_name), shifts(title, start_time)')
+        .select('*, shifts(title, shift_date)')
         .eq('organization_id', organization.id)
-        .eq('status', 'submitted')
+        .eq('status', 'SUBMITTED')
         .order('created_at', { ascending: true })
         .limit(5);
-      return data ?? [];
+      if (!data || data.length === 0) return [];
+
+      const userIds = [...new Set(data.map((t) => t.employee_user_id).filter(Boolean))];
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, avatar_url')
+        .in('user_id', userIds);
+      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+
+      return data.map((ts) => ({ ...ts, profile: profileMap[ts.employee_user_id] ?? null }));
     },
     enabled: !!organization?.id,
   });
@@ -60,18 +75,16 @@ export function ManagerDashboard() {
     queryKey: ['manager-today-shifts', organization?.id],
     queryFn: async () => {
       if (!organization?.id) return [];
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
+      const today = new Date().toISOString().split('T')[0];
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
       const { data } = await supabase
         .from('shifts')
-        .select('*, locations(name), shift_assignments(id, status, profiles(first_name, last_name))')
+        .select('*, locations(name), shift_assignments(id)')
         .eq('organization_id', organization.id)
-        .eq('status', 'published')
-        .gte('start_time', today.toISOString())
-        .lt('start_time', tomorrow.toISOString())
-        .order('start_time')
+        .eq('status', 'PUBLISHED')
+        .gte('shift_date', today)
+        .lt('shift_date', tomorrow)
+        .order('start_at')
         .limit(5);
       return data ?? [];
     },
@@ -86,10 +99,10 @@ export function ManagerDashboard() {
         <StatCard label="Need Approval" value={stats?.pendingApprovals ?? 0} icon="time" color={Colors.warning} />
       </View>
 
-      {stats?.pendingApprovals! > 0 && (
+      {(stats?.pendingApprovals ?? 0) > 0 && (
         <TouchableOpacity style={styles.alertBanner} onPress={() => router.push('/(tabs)/approvals')}>
           <Ionicons name="alert-circle" size={18} color={Colors.warning} />
-          <Text style={styles.alertText}>{stats?.pendingApprovals} timesheet{stats?.pendingApprovals! > 1 ? 's' : ''} awaiting approval</Text>
+          <Text style={styles.alertText}>{stats?.pendingApprovals} timesheet{(stats?.pendingApprovals ?? 0) > 1 ? 's' : ''} awaiting approval</Text>
           <Ionicons name="chevron-forward" size={16} color={Colors.textSecondary} />
         </TouchableOpacity>
       )}
@@ -108,7 +121,7 @@ export function ManagerDashboard() {
             </View>
             <View style={styles.metaRow}>
               <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
-              <Text style={styles.metaText}>{formatTime(shift.start_time)} – {formatTime(shift.end_time)}</Text>
+              <Text style={styles.metaText}>{formatTime(shift.start_at)} – {formatTime(shift.end_at)}</Text>
               {shift.locations?.name && (
                 <>
                   <Text style={styles.metaDot}>·</Text>
@@ -118,9 +131,7 @@ export function ManagerDashboard() {
               )}
             </View>
             <View style={styles.staffRow}>
-              <Text style={styles.staffCount}>
-                {shift.shift_assignments?.length ?? 0}/{shift.required_staff} staff
-              </Text>
+              <Text style={styles.staffCount}>{shift.shift_assignments?.length ?? 0} staff assigned</Text>
             </View>
           </Card>
         ))
@@ -135,12 +146,15 @@ export function ManagerDashboard() {
         pendingTimesheets.map((ts: any) => (
           <Card key={ts.id} style={styles.card} onPress={() => router.push('/(tabs)/approvals')}>
             <View style={styles.cardHeader}>
-              <Avatar name={fullName(ts.profiles?.first_name, ts.profiles?.last_name)} size={32} color={Colors.primary} />
+              <Avatar name={fullName(ts.profile?.full_name)} url={ts.profile?.avatar_url} size={32} color={Colors.primary} />
               <View style={styles.cardInfo}>
-                <Text style={styles.cardTitle}>{fullName(ts.profiles?.first_name, ts.profiles?.last_name)}</Text>
-                <Text style={styles.metaText}>{ts.shifts?.title ?? 'Manual entry'} · {formatDate(ts.start_time, 'dd MMM')}</Text>
+                <Text style={styles.cardTitle}>{fullName(ts.profile?.full_name)}</Text>
+                <Text style={styles.metaText}>
+                  {ts.shifts?.title ?? 'Manual entry'}
+                  {ts.shifts?.shift_date ? ` · ${formatDate(ts.shifts.shift_date, 'dd MMM')}` : ''}
+                </Text>
               </View>
-              <Badge label="Pending" status="submitted" size="sm" />
+              <Badge label="Pending" status="SUBMITTED" size="sm" />
             </View>
           </Card>
         ))

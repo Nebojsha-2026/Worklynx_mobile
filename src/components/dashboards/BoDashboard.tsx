@@ -21,16 +21,34 @@ export function BoDashboard() {
       const weekStart = new Date();
       weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
       weekStart.setHours(0, 0, 0, 0);
+      const weekStartDate = weekStart.toISOString().split('T')[0];
 
       const [membersRes, earningsRes, pendingRes, invitesRes] = await Promise.all([
-        supabase.from('org_members').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'active'),
-        supabase.from('earnings').select('amount').eq('organization_id', organization.id).gte('created_at', weekStart.toISOString()),
-        supabase.from('timesheets').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).eq('status', 'submitted'),
-        supabase.from('invites').select('id', { count: 'exact', head: true }).eq('organization_id', organization.id).is('accepted_at', null),
+        supabase.from('org_members').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('is_active', true),
+        supabase.from('earnings').select('minutes_paid, hourly_rate')
+          .eq('organization_id', organization.id)
+          .gte('earned_at', weekStartDate),
+        supabase.from('timesheets').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .eq('status', 'SUBMITTED'),
+        supabase.from('invites').select('id', { count: 'exact', head: true })
+          .eq('organization_id', organization.id)
+          .is('accepted_at', null),
       ]);
 
-      const weeklyWages = earningsRes.data?.reduce((s, e) => s + (e.amount ?? 0), 0) ?? 0;
-      return { members: membersRes.count ?? 0, weeklyWages, pending: pendingRes.count ?? 0, pendingInvites: invitesRes.count ?? 0 };
+      const weeklyWages = (earningsRes.data ?? []).reduce((s, e) => {
+        const hrs = (e.minutes_paid ?? 0) / 60;
+        return s + hrs * (e.hourly_rate ?? 0);
+      }, 0);
+
+      return {
+        members: membersRes.count ?? 0,
+        weeklyWages,
+        pending: pendingRes.count ?? 0,
+        pendingInvites: invitesRes.count ?? 0,
+      };
     },
     enabled: !!organization?.id,
   });
@@ -73,8 +91,9 @@ export function BoDashboard() {
         <View style={styles.orgRow}>
           <View style={styles.orgInfo}>
             <Text style={styles.orgName}>{organization?.name}</Text>
-            {organization?.abn && <Text style={styles.orgMeta}>ABN: {organization.abn}</Text>}
-            {organization?.address && <Text style={styles.orgMeta}>{organization.address}</Text>}
+            {organization?.currency_code && (
+              <Text style={styles.orgMeta}>Currency: {organization.currency_code}</Text>
+            )}
           </View>
           <TouchableOpacity onPress={() => router.push('/(tabs)/profile')}>
             <Ionicons name="settings-outline" size={20} color={Colors.textSecondary} />
