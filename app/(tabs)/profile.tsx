@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
+import { useThemeStore } from '@/store/themeStore';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -21,6 +22,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const { user, profile, role, organization, orgMember, reset } = useAuthStore();
+  const { isDark, toggleTheme } = useThemeStore();
   const [editing, setEditing] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.full_name ?? '');
   const [phone, setPhone] = useState(profile?.phone ?? '');
@@ -78,7 +80,12 @@ export default function ProfileScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + Spacing.xl }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + Spacing.xl }]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Profile header */}
         <View style={styles.profileHeader}>
           <Avatar name={name} url={profile?.avatar_url} size={80} color={roleColor(role)} />
           <View style={styles.profileInfo}>
@@ -91,11 +98,25 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* Edit / View */}
         {editing ? (
           <Card style={styles.editCard}>
             <Text style={styles.sectionTitle}>Edit Profile</Text>
-            <Input label="Full name" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" />
-            <Input label="Phone" value={phone} onChangeText={setPhone} keyboardType="phone-pad" leftIcon="call-outline" placeholder="+61 4xx xxx xxx" />
+            <Input
+              label="Full name"
+              value={displayName}
+              onChangeText={setDisplayName}
+              autoCapitalize="words"
+              leftIcon="person-outline"
+            />
+            <Input
+              label="Phone"
+              value={phone}
+              onChangeText={setPhone}
+              keyboardType="phone-pad"
+              leftIcon="call-outline"
+              placeholder="+61 4xx xxx xxx"
+            />
             <View style={styles.editActions}>
               <Button title="Cancel" variant="secondary" onPress={() => setEditing(false)} style={{ flex: 1 }} />
               <Button title="Save Changes" onPress={() => saveMutation.mutate()} loading={saveMutation.isPending} style={{ flex: 1 }} />
@@ -107,10 +128,11 @@ export default function ProfileScreen() {
             <InfoRow icon="mail-outline" label="Email" value={user?.email ?? '—'} />
             <InfoRow icon="call-outline" label="Phone" value={profile?.phone ?? '—'} />
             {orgMember?.start_date && <InfoRow icon="calendar-outline" label="Start date" value={orgMember.start_date} />}
-            {orgMember?.hourly_rate && <InfoRow icon="cash-outline" label="Hourly rate" value={`$${orgMember.hourly_rate}`} />}
+            {orgMember?.employment_type && <InfoRow icon="briefcase-outline" label="Employment" value={orgMember.employment_type} />}
           </Card>
         )}
 
+        {/* Organisation */}
         {organization && (
           <Card style={styles.orgCard}>
             <Text style={styles.sectionTitle}>Organisation</Text>
@@ -119,6 +141,24 @@ export default function ProfileScreen() {
           </Card>
         )}
 
+        {/* Appearance */}
+        <Card style={styles.appearanceCard}>
+          <Text style={styles.sectionTitle}>Appearance</Text>
+          <View style={styles.themeRow}>
+            <View style={styles.themeInfo}>
+              <Ionicons name={isDark ? 'moon-outline' : 'sunny-outline'} size={18} color={Colors.textSecondary} />
+              <Text style={styles.themeLabel}>{isDark ? 'Dark Mode' : 'Light Mode'}</Text>
+            </View>
+            <Switch
+              value={isDark}
+              onValueChange={toggleTheme}
+              trackColor={{ false: Colors.border, true: Colors.primary + '80' }}
+              thumbColor={isDark ? Colors.primary : Colors.textMuted}
+            />
+          </View>
+        </Card>
+
+        {/* Security */}
         <Card style={styles.secCard}>
           <Text style={styles.sectionTitle}>Security</Text>
           <TouchableOpacity style={styles.secRow}>
@@ -176,6 +216,10 @@ const styles = StyleSheet.create({
   editActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.xs },
   detailsCard: { gap: Spacing.md },
   orgCard: { gap: Spacing.md },
+  appearanceCard: {},
+  themeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 },
+  themeInfo: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  themeLabel: { fontSize: FontSize.base, color: Colors.textPrimary },
   secCard: {},
   secRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xs },
   secLabel: { flex: 1, fontSize: FontSize.base, color: Colors.textPrimary },

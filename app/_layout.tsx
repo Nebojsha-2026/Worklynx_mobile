@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Stack, router, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -9,6 +9,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import { LoadingScreen } from '@/components/ui/LoadingScreen';
 import { useAuthListener } from '@/hooks/useAuth';
 import { useAuthStore } from '@/store/authStore';
+import { useThemeStore } from '@/store/themeStore';
 import { Colors } from '@/lib/theme';
 
 SplashScreen.preventAutoHideAsync();
@@ -16,7 +17,7 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 1000 * 60 * 2, // 2 min
+      staleTime: 1000 * 60 * 2,
       retry: 1,
     },
   },
@@ -28,9 +29,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isLoading) return;
-
     const inAuthGroup = segments[0] === '(auth)';
-
     if (!session && !inAuthGroup) {
       router.replace('/(auth)/login');
     } else if (session && inAuthGroup) {
@@ -43,15 +42,14 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function RootLayoutInner() {
+function RootLayoutInner({ themeKey }: { themeKey: number }) {
   const { isLoading } = useAuthStore();
+  const { isDark } = useThemeStore();
 
   useAuthListener();
 
   useEffect(() => {
-    if (!isLoading) {
-      SplashScreen.hideAsync();
-    }
+    if (!isLoading) SplashScreen.hideAsync();
   }, [isLoading]);
 
   return (
@@ -66,13 +64,29 @@ function RootLayoutInner() {
 }
 
 export default function RootLayout() {
+  const [themeKey, setThemeKey] = useState(0);
+  const { loadTheme, isDark } = useThemeStore();
+
+  // Load saved theme preference on app start
+  useEffect(() => {
+    loadTheme().then(() => setThemeKey((k) => k + 1));
+  }, []);
+
+  // Re-render entire tree when theme changes (so Colors object takes effect)
+  const { toggleTheme: _toggle } = useThemeStore();
+  useEffect(() => {
+    // Subscribe to theme changes via zustand
+    const unsub = useThemeStore.subscribe(() => setThemeKey((k) => k + 1));
+    return unsub;
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
-            <StatusBar style="light" backgroundColor={Colors.bg} />
-            <RootLayoutInner />
+            <StatusBar style={isDark ? 'light' : 'dark'} backgroundColor={Colors.bg} />
+            <RootLayoutInner key={themeKey} themeKey={themeKey} />
           </ToastProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
