@@ -67,17 +67,19 @@ export default function ReportsScreen() {
         byEmployee[uid].wages += hrs * (e.hourly_rate ?? 0);
       }
 
-      // Fetch profile names for top earners
+      // Fetch member names using SECURITY DEFINER RPC (bypasses RLS)
       const topIds = Object.entries(byEmployee)
         .sort((a, b) => b[1].minutes - a[1].minutes)
         .slice(0, 10)
         .map(([id]) => id);
 
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('user_id, full_name')
-        .in('user_id', topIds);
-      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p.full_name]));
+      const { data: membersData } = await supabase.rpc('list_org_members', {
+        p_org_id: organization.id,
+        p_roles: ['EMPLOYEE', 'MANAGER', 'BM', 'BO'],
+      });
+      const profileMap = Object.fromEntries(
+        (membersData ?? []).map((m: any) => [m.user_id, m.full_name])
+      );
 
       const topEarners = topIds.map((id) => ({
         id,

@@ -29,7 +29,7 @@ export function BmDashboard() {
           .eq('status', 'SUBMITTED'),
         supabase.from('shifts').select('id', { count: 'exact', head: true })
           .eq('organization_id', organization.id)
-          .eq('status', 'PUBLISHED')
+          .eq('status', 'ACTIVE')
           .gte('shift_date', today),
       ]);
       return { members: membersRes.count ?? 0, pending: pendingRes.count ?? 0, shifts: shiftsRes.count ?? 0 };
@@ -50,12 +50,13 @@ export function BmDashboard() {
         .limit(8);
       if (!data || data.length === 0) return [];
 
-      const userIds = [...new Set(data.map((t) => t.employee_user_id).filter(Boolean))];
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, avatar_url')
-        .in('user_id', userIds);
-      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+      const { data: membersData } = await supabase.rpc('list_org_members', {
+        p_org_id: organization.id,
+        p_roles: ['EMPLOYEE', 'MANAGER', 'BM', 'BO'],
+      });
+      const profileMap = Object.fromEntries(
+        (membersData ?? []).map((m: any) => [m.user_id, { user_id: m.user_id, full_name: m.full_name, avatar_url: m.avatar_url }])
+      );
 
       return data.map((ts) => ({ ...ts, profile: profileMap[ts.employee_user_id] ?? null }));
     },
