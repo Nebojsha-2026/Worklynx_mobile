@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Modal, ScrollView, TextInput } from 'react-native';
+import {
+  View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl,
+  Modal, ScrollView, TextInput,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,89 +22,58 @@ import { formatDate, fullName } from '@/lib/format';
 
 export default function TeamScreen() {
   const insets = useSafeAreaInsets();
-  const toast = useToast();
-  const queryClient = useQueryClient();
-  const { user, organization, role } = useAuthStore();
+  const { organization, role } = useAuthStore();
   const [search, setSearch] = useState('');
   const [selectedMember, setSelectedMember] = useState<any>(null);
   const [showInvite, setShowInvite] = useState(false);
 
-  const isBO = role === 'BO';
-  const isBM = role === 'BM';
-  const canManage = isBO || isBM;
+  const canManage = role === 'BO' || role === 'BM';
 
+  // Role filter — mirrors web platform visibility rules
+  function rolesForViewer(): string[] {
+    if (role === 'BO') return ['EMPLOYEE', 'MANAGER', 'BM', 'BO'];
+    if (role === 'BM') return ['EMPLOYEE', 'MANAGER'];
+    return ['EMPLOYEE'];
+  }
+
+  // Use list_org_members RPC (SECURITY DEFINER — bypasses profiles RLS)
   const { data: members = [], isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['team-members', organization?.id],
+    queryKey: ['team-members', organization?.id, role],
     queryFn: async () => {
       if (!organization?.id) return [];
-
-      // Step 1: fetch org_members (RLS allows org members to see each other)
-      const { data: membersData, error: membersError } = await supabase
-        .from('org_members')
-        .select('*')
-        .eq('organization_id', organization.id)
-        .order('role')
-        .order('created_at');
-
-      if (membersError || !membersData?.length) return membersData ?? [];
-
-      // Step 2: fetch profiles for all member user_ids
-      // Note: profiles RLS currently only allows reading own profile.
-      // If the Supabase profiles_select policy is updated to allow org-member reads,
-      // names will appear. Otherwise members show without names (role/status still visible).
-      const userIds = membersData.map((m) => m.user_id);
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, phone, avatar_url')
-        .in('user_id', userIds);
-
-      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
-      return membersData.map((m) => ({ ...m, profile: profileMap[m.user_id] ?? null }));
+      const { data, error } = await supabase.rpc('list_org_members', {
+        p_org_id: organization.id,
+        p_roles: rolesForViewer(),
+      });
+      if (error) throw error;
+      return data ?? [];
     },
     enabled: !!organization?.id,
   });
 
   const filtered = members.filter((m: any) => {
-    const name = fullName(m.profile?.full_name).toLowerCase();
+    const name = fullName(m.full_name).toLowerCase();
+    const email = (m.email ?? '').toLowerCase();
     const q = search.toLowerCase();
-    return !q || name.includes(q);
+    return !q || name.includes(q) || email.includes(q);
   });
 
-  const deactivateMutation = useMutation({
-    mutationFn: async (memberId: string) => {
-      const { error } = await supabase
-        .from('org_members')
-        .update({ is_active: false })
-        .eq('id', memberId)
-        .eq('organization_id', organization!.id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      toast.success('Member deactivated');
-      queryClient.invalidateQueries({ queryKey: ['team-members'] });
-      setSelectedMember(null);
-    },
-    onError: (err: any) => toast.error('Failed to deactivate', err?.message),
-  });
-
-  const renderItem = ({ item }: { item: any }) => {
-    const name = fullName(item.profile?.full_name);
-    return (
-      <Card style={styles.card} onPress={() => setSelectedMember(item)}>
-        <View style={styles.memberRow}>
-          <Avatar name={name} url={item.profile?.avatar_url} size={44} color={roleColor(item.role)} />
-          <View style={styles.memberInfo}>
-            <Text style={styles.memberName}>{name}</Text>
-            <View style={styles.memberMeta}>
-              <Badge label={roleLabel(item.role)} color={roleColor(item.role)} size="sm" />
-              {!item.is_active && <Badge label="Inactive" status="REJECTED" size="sm" />}
-            </View>
+  const renderItem = ({ item }: { item: any }) => (
+    <Card style={styles.card} onPress={() => setSelectedMember(item)}>
+      <View style={styles.memberRow}>
+        <Avatar name={fullName(item.full_name)} url={item.avatar_url} size={44} color={roleColor(item.role)} />
+        <View style={styles.memberInfo}>
+          <Text style={styles.memberName}>{fullName(item.full_name)}</Text>
+          <Text style={styles.memberEmail} numberOfLines={1}>{item.email ?? ''}</Text>
+          <View style={styles.memberMeta}>
+            <Badge label={roleLabel(item.role)} color={roleColor(item.role)} size="sm" />
+            {!item.is_active && <Badge label="Inactive" status="REJECTED" size="sm" />}
           </View>
-          <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
         </View>
-      </Card>
-    );
-  };
+        <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+      </View>
+    </Card>
+  );
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -121,7 +93,7 @@ export default function TeamScreen() {
           style={styles.searchInput}
           value={search}
           onChangeText={setSearch}
-          placeholder="Search team members..."
+          placeholder="Search by name or email..."
           placeholderTextColor={Colors.textMuted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -138,7 +110,7 @@ export default function TeamScreen() {
       ) : (
         <FlatList
           data={filtered}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.user_id}
           renderItem={renderItem}
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
@@ -155,28 +127,78 @@ export default function TeamScreen() {
         />
       )}
 
-      <Modal visible={!!selectedMember} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSelectedMember(null)}>
+      <Modal
+        visible={!!selectedMember}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setSelectedMember(null)}
+      >
         {selectedMember && (
           <MemberDetailModal
             member={selectedMember}
+            orgId={organization?.id ?? ''}
             onClose={() => setSelectedMember(null)}
-            onDeactivate={() => deactivateMutation.mutate(selectedMember.id)}
-            deactivating={deactivateMutation.isPending}
             canManage={canManage}
           />
         )}
       </Modal>
 
-      <Modal visible={showInvite} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowInvite(false)}>
+      <Modal
+        visible={showInvite}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowInvite(false)}
+      >
         <InviteModal orgId={organization?.id ?? ''} onClose={() => setShowInvite(false)} />
       </Modal>
     </View>
   );
 }
 
-function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canManage }: any) {
+// ─── Member Detail Modal ──────────────────────────────────────────────────────
+
+function MemberDetailModal({ member, orgId, onClose, canManage }: any) {
   const insets = useSafeAreaInsets();
-  const name = fullName(member.profile?.full_name);
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [deactivating, setDeactivating] = useState(false);
+
+  // Fetch extended profile (SECURITY DEFINER RPC — returns full profile data)
+  const { data: extProfile, isLoading: loadingProfile } = useQuery({
+    queryKey: ['member-profile-extended', orgId, member.user_id],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('get_employee_profile_extended', {
+        p_org_id: orgId,
+        p_employee_user_id: member.user_id,
+      });
+      if (error) throw error;
+      return data?.[0] ?? null;
+    },
+    enabled: !!orgId && !!member.user_id,
+  });
+
+  async function handleDeactivate() {
+    setDeactivating(true);
+    try {
+      const { error } = await supabase.rpc('deactivate_org_member', {
+        p_org_id: orgId,
+        p_user_id: member.user_id,
+      });
+      if (error) throw error;
+      toast.success('Member deactivated');
+      queryClient.invalidateQueries({ queryKey: ['team-members'] });
+      onClose();
+    } catch (err: any) {
+      toast.error('Failed to deactivate', err?.message);
+    } finally {
+      setDeactivating(false);
+    }
+  }
+
+  const name = fullName(member.full_name ?? extProfile?.full_name);
+  const phone = extProfile?.phone ?? '—';
+  const addressParts = [extProfile?.address_suburb, extProfile?.address_state, extProfile?.address_postcode].filter(Boolean);
+  const address = addressParts.length ? addressParts.join(', ') : null;
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
@@ -184,11 +206,14 @@ function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canMan
       <ScrollView showsVerticalScrollIndicator={false}>
         <View style={styles.modalHeader}>
           <Text style={styles.modalTitle}>Team Member</Text>
-          <TouchableOpacity onPress={onClose}><Ionicons name="close" size={24} color={Colors.textSecondary} /></TouchableOpacity>
+          <TouchableOpacity onPress={onClose}>
+            <Ionicons name="close" size={24} color={Colors.textSecondary} />
+          </TouchableOpacity>
         </View>
 
+        {/* Profile header */}
         <View style={styles.profileSection}>
-          <Avatar name={name} url={member.profile?.avatar_url} size={72} color={roleColor(member.role)} />
+          <Avatar name={name} url={member.avatar_url ?? extProfile?.avatar_url} size={72} color={roleColor(member.role)} />
           <Text style={styles.profileName}>{name}</Text>
           <View style={styles.profileBadges}>
             <Badge label={roleLabel(member.role)} color={roleColor(member.role)} />
@@ -198,26 +223,45 @@ function MemberDetailModal({ member, onClose, onDeactivate, deactivating, canMan
 
         <Divider margin="sm" />
 
-        <View style={styles.detailList}>
-          {member.profile?.phone && <DetailRow icon="call-outline" label="Phone" value={member.profile.phone} />}
-          {member.start_date && <DetailRow icon="calendar-outline" label="Start date" value={formatDate(member.start_date)} />}
-          {member.employment_type && <DetailRow icon="briefcase-outline" label="Employment" value={member.employment_type} />}
-          {member.payment_frequency && <DetailRow icon="cash-outline" label="Pay frequency" value={member.payment_frequency} />}
-        </View>
+        {loadingProfile ? (
+          <LoadingScreen message="Loading details..." />
+        ) : (
+          <View style={styles.detailList}>
+            {member.email && <DetailRow icon="mail-outline" label="Email" value={member.email} />}
+            {phone !== '—' && <DetailRow icon="call-outline" label="Phone" value={phone} />}
+            {extProfile?.dob && <DetailRow icon="gift-outline" label="Date of birth" value={formatDate(extProfile.dob)} />}
+            {address && <DetailRow icon="location-outline" label="Location" value={address} />}
+            {extProfile?.start_date && <DetailRow icon="calendar-outline" label="Start date" value={formatDate(extProfile.start_date)} />}
+            {member.employment_type && <DetailRow icon="briefcase-outline" label="Employment" value={member.employment_type} />}
+            {member.payment_frequency && <DetailRow icon="cash-outline" label="Pay frequency" value={member.payment_frequency} />}
+            {extProfile?.residency_status && <DetailRow icon="id-card-outline" label="Residency" value={extProfile.residency_status} />}
+            {extProfile?.emergency_contact_name && (
+              <DetailRow icon="alert-circle-outline" label="Emergency contact" value={`${extProfile.emergency_contact_name} (${extProfile.emergency_contact_relationship ?? ''})`} />
+            )}
+          </View>
+        )}
 
-        {canManage && member.is_active && member.user_id !== member.own_user_id && (
-          <Button title="Deactivate Member" variant="danger" onPress={onDeactivate} loading={deactivating} fullWidth style={{ marginTop: Spacing.md }} />
+        {canManage && member.is_active && (
+          <Button
+            title="Deactivate Member"
+            variant="danger"
+            onPress={handleDeactivate}
+            loading={deactivating}
+            fullWidth
+            style={{ marginTop: Spacing.md }}
+          />
         )}
       </ScrollView>
     </View>
   );
 }
 
+// ─── Invite Modal ─────────────────────────────────────────────────────────────
+
 function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const { user } = useAuthStore();
   const [email, setEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'EMPLOYEE' | 'MANAGER' | 'BM'>('EMPLOYEE');
   const [loading, setLoading] = useState(false);
@@ -238,13 +282,14 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
       const expires = new Date();
       expires.setDate(expires.getDate() + 7);
       const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-      const { error } = await supabase.from('invites').insert({
-        organization_id: orgId,
-        invited_email: email.trim().toLowerCase(),
-        invited_role: inviteRole,
-        token,
-        invited_by_user_id: user?.id,
-        expires_at: expires.toISOString(),
+
+      // Use the SECURITY DEFINER RPC which handles permissions correctly
+      const { error } = await supabase.rpc('create_invite_secure', {
+        p_org_id: orgId,
+        p_email: email.trim().toLowerCase(),
+        p_role: inviteRole,
+        p_token: token,
+        p_expires_at: expires.toISOString(),
       });
       if (error) throw error;
       toast.success('Invite sent!', `An invitation has been sent to ${email}`);
@@ -262,8 +307,11 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
       <View style={styles.modalHandle} />
       <View style={styles.modalHeader}>
         <Text style={styles.modalTitle}>Invite Team Member</Text>
-        <TouchableOpacity onPress={onClose}><Ionicons name="close" size={24} color={Colors.textSecondary} /></TouchableOpacity>
+        <TouchableOpacity onPress={onClose}>
+          <Ionicons name="close" size={24} color={Colors.textSecondary} />
+        </TouchableOpacity>
       </View>
+
       <Text style={styles.fieldLabel}>Email address</Text>
       <View style={styles.inputWrap}>
         <Ionicons name="mail-outline" size={16} color={Colors.textMuted} style={styles.inputIcon} />
@@ -278,6 +326,7 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
           placeholderTextColor={Colors.textMuted}
         />
       </View>
+
       <Text style={[styles.fieldLabel, { marginTop: Spacing.md }]}>Role</Text>
       <View style={styles.roleList}>
         {roles.map((r) => (
@@ -293,7 +342,15 @@ function InviteModal({ orgId, onClose }: { orgId: string; onClose: () => void })
           </TouchableOpacity>
         ))}
       </View>
-      <Button title="Send Invitation" onPress={handleInvite} loading={loading} fullWidth size="lg" style={{ marginTop: Spacing.xl }} />
+
+      <Button
+        title="Send Invitation"
+        onPress={handleInvite}
+        loading={loading}
+        fullWidth
+        size="lg"
+        style={{ marginTop: Spacing.xl }}
+      />
     </View>
   );
 }
@@ -324,6 +381,7 @@ const styles = StyleSheet.create({
   memberRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   memberInfo: { flex: 1 },
   memberName: { fontSize: FontSize.base, fontWeight: FontWeight.semibold, color: Colors.textPrimary },
+  memberEmail: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 1 },
   memberMeta: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: Spacing.xs, flexWrap: 'wrap' },
   modal: { flex: 1, backgroundColor: Colors.bgCard, paddingHorizontal: Spacing.md },
   modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.md },

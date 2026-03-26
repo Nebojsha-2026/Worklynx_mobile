@@ -38,13 +38,14 @@ export default function ApprovalsScreen() {
       const { data: tsData } = await q.order('created_at', { ascending: true }).limit(100);
       if (!tsData || tsData.length === 0) return [];
 
-      // Fetch profiles separately (no direct FK from employee_user_id to profiles.user_id)
-      const userIds = [...new Set(tsData.map((t) => t.employee_user_id).filter(Boolean))];
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, avatar_url')
-        .in('user_id', userIds);
-      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+      // Use SECURITY DEFINER RPC to get member profiles (bypasses RLS restriction)
+      const { data: membersData } = await supabase.rpc('list_org_members', {
+        p_org_id: organization.id,
+        p_roles: ['EMPLOYEE', 'MANAGER', 'BM', 'BO'],
+      });
+      const profileMap = Object.fromEntries(
+        (membersData ?? []).map((m: any) => [m.user_id, { user_id: m.user_id, full_name: m.full_name, avatar_url: m.avatar_url }])
+      );
 
       return tsData.map((ts) => ({
         ...ts,

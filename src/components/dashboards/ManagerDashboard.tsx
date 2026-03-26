@@ -28,7 +28,7 @@ export function ManagerDashboard() {
           .eq('organization_id', organization.id)
           .gte('shift_date', today)
           .lt('shift_date', tomorrow)
-          .eq('status', 'PUBLISHED'),
+          .eq('status', 'ACTIVE'),
         supabase.from('org_members').select('id', { count: 'exact', head: true })
           .eq('organization_id', organization.id)
           .eq('is_active', true),
@@ -59,12 +59,13 @@ export function ManagerDashboard() {
         .limit(5);
       if (!data || data.length === 0) return [];
 
-      const userIds = [...new Set(data.map((t) => t.employee_user_id).filter(Boolean))];
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('user_id, full_name, avatar_url')
-        .in('user_id', userIds);
-      const profileMap = Object.fromEntries((profilesData ?? []).map((p) => [p.user_id, p]));
+      const { data: membersData } = await supabase.rpc('list_org_members', {
+        p_org_id: organization.id,
+        p_roles: ['EMPLOYEE', 'MANAGER', 'BM', 'BO'],
+      });
+      const profileMap = Object.fromEntries(
+        (membersData ?? []).map((m: any) => [m.user_id, { user_id: m.user_id, full_name: m.full_name, avatar_url: m.avatar_url }])
+      );
 
       return data.map((ts) => ({ ...ts, profile: profileMap[ts.employee_user_id] ?? null }));
     },
@@ -81,7 +82,7 @@ export function ManagerDashboard() {
         .from('shifts')
         .select('*, locations(name), shift_assignments(id)')
         .eq('organization_id', organization.id)
-        .eq('status', 'PUBLISHED')
+        .in('status', ['ACTIVE', 'OFFERED'])
         .gte('shift_date', today)
         .lt('shift_date', tomorrow)
         .order('start_at')

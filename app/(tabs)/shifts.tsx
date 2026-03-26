@@ -381,18 +381,37 @@ function CreateShiftModal({ orgId, userId, onClose, onCreated }: any) {
   const [location, setLocation] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<any>(null);
+  const [showEmployeePicker, setShowEmployeePicker] = useState(false);
+
+  // Load employees for assignment picker
+  const { data: employees = [] } = useQuery({
+    queryKey: ['employees-for-picker', orgId],
+    queryFn: async () => {
+      const { data } = await supabase.rpc('list_org_members', {
+        p_org_id: orgId,
+        p_roles: ['EMPLOYEE'],
+      });
+      return data ?? [];
+    },
+    enabled: !!orgId,
+  });
 
   async function handleCreate() {
+    if (!title.trim()) {
+      toast.error('Title is required');
+      return;
+    }
     if (!shiftDate || !startAt || !endAt) {
       toast.error('Date and times are required');
       return;
     }
     setLoading(true);
     try {
-      const { error } = await supabase.from('shifts').insert({
+      const { data: shift, error } = await supabase.from('shifts').insert({
         organization_id: orgId,
         created_by_user_id: userId,
-        title: title.trim() || null,
+        title: title.trim(),
         shift_date: shiftDate,
         end_date: shiftDate,
         start_at: startAt + ':00',
@@ -400,9 +419,19 @@ function CreateShiftModal({ orgId, userId, onClose, onCreated }: any) {
         break_minutes: parseInt(breakMins) || 0,
         location: location.trim() || null,
         description: notes.trim() || null,
-        status: 'PUBLISHED',
-      });
+        status: 'ACTIVE',
+      }).select('id').single();
       if (error) throw error;
+
+      // Assign to employee if one was selected
+      if (selectedEmployee && shift?.id) {
+        const { error: assignErr } = await supabase.rpc('assign_shift_to_employee', {
+          p_shift_id: shift.id,
+          p_employee_user_id: selectedEmployee.user_id,
+        });
+        if (assignErr) console.warn('Assign error:', assignErr.message);
+      }
+
       toast.success('Shift created!');
       onCreated();
     } catch (err: any) {
@@ -423,7 +452,7 @@ function CreateShiftModal({ orgId, userId, onClose, onCreated }: any) {
           </TouchableOpacity>
         </View>
 
-        <FieldLabel>Title (optional)</FieldLabel>
+        <FieldLabel>Title *</FieldLabel>
         <FieldInput value={title} onChangeText={setTitle} placeholder="e.g. Morning Shift" icon="text-outline" />
 
         <FieldLabel>Date *</FieldLabel>
@@ -445,6 +474,41 @@ function CreateShiftModal({ orgId, userId, onClose, onCreated }: any) {
 
         <FieldLabel>Location</FieldLabel>
         <FieldInput value={location} onChangeText={setLocation} placeholder="Address or place name" icon="location-outline" />
+
+        <FieldLabel>Assign Employee (optional)</FieldLabel>
+        <TouchableOpacity
+          style={styles.employeePickerBtn}
+          onPress={() => setShowEmployeePicker(true)}
+        >
+          <Ionicons name="person-outline" size={16} color={Colors.textMuted} style={styles.inputIcon} />
+          <Text style={[styles.employeePickerText, !selectedEmployee && { color: Colors.textMuted }]}>
+            {selectedEmployee ? selectedEmployee.full_name : 'Select employee...'}
+          </Text>
+          <Ionicons name="chevron-down-outline" size={16} color={Colors.textMuted} />
+        </TouchableOpacity>
+
+        {showEmployeePicker && (
+          <View style={styles.employeeList}>
+            <TouchableOpacity
+              style={styles.employeeOption}
+              onPress={() => { setSelectedEmployee(null); setShowEmployeePicker(false); }}
+            >
+              <Text style={styles.employeeOptionText}>— None —</Text>
+            </TouchableOpacity>
+            {employees.map((emp: any) => (
+              <TouchableOpacity
+                key={emp.user_id}
+                style={[styles.employeeOption, selectedEmployee?.user_id === emp.user_id && styles.employeeOptionActive]}
+                onPress={() => { setSelectedEmployee(emp); setShowEmployeePicker(false); }}
+              >
+                <Text style={[styles.employeeOptionText, selectedEmployee?.user_id === emp.user_id && { color: Colors.primary, fontWeight: '600' }]}>
+                  {emp.full_name}
+                </Text>
+                {emp.email ? <Text style={styles.employeeOptionEmail}>{emp.email}</Text> : null}
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
         <FieldLabel>Notes</FieldLabel>
         <FieldInput value={notes} onChangeText={setNotes} placeholder="Optional notes..." icon="document-text-outline" multiline />
@@ -540,4 +604,12 @@ const styles = StyleSheet.create({
   inputIcon: { marginRight: 6 },
   textInput: { flex: 1, paddingVertical: Spacing.sm + 2, fontSize: FontSize.base, color: Colors.textPrimary },
   createActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.lg },
+  // Employee picker
+  employeePickerBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.bgInput, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.border, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.sm + 2, marginBottom: 2 },
+  employeePickerText: { flex: 1, fontSize: FontSize.base, color: Colors.textPrimary },
+  employeeList: { backgroundColor: Colors.bgCard, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.sm, overflow: 'hidden' },
+  employeeOption: { padding: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  employeeOptionActive: { backgroundColor: Colors.primary + '15' },
+  employeeOptionText: { fontSize: FontSize.base, color: Colors.textPrimary },
+  employeeOptionEmail: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
 });
