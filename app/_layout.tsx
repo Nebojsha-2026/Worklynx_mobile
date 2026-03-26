@@ -11,6 +11,8 @@ import { useAuthListener } from '@/hooks/useAuth';
 import { useAuthStore } from '@/store/authStore';
 import { useThemeStore } from '@/store/themeStore';
 import { Colors } from '@/lib/theme';
+import { usePermissions } from '@/hooks/usePermissions';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -43,10 +45,16 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 function RootLayoutInner({ themeKey }: { themeKey: number }) {
-  const { isLoading } = useAuthStore();
+  const { isLoading, user, session } = useAuthStore();
   const { isDark } = useThemeStore();
 
   useAuthListener();
+
+  // Request permissions once the user is authenticated
+  usePermissions(!!session && !isLoading);
+
+  // Register Expo push token + handle notification taps
+  usePushNotifications(user?.id);
 
   useEffect(() => {
     if (!isLoading) SplashScreen.hideAsync();
