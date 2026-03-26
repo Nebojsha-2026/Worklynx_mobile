@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl,
-  Modal, ScrollView, TextInput, Alert, Platform,
+  Modal, ScrollView, TextInput, Alert, Platform, Image, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { Card } from '@/components/ui/Card';
@@ -16,6 +18,20 @@ import { LoadingScreen } from '@/components/ui/LoadingScreen';
 import { useToast } from '@/components/ui/Toast';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/lib/theme';
 import { formatDate, formatTime } from '@/lib/format';
+
+// ── Haversine distance in metres ─────────────────────────────────────────────
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const STORAGE_BUCKET = 'shift-photos';
+const GEO_POLL_MS   = 60_000;  // check location every 60 s while clocked in
+const GEO_GRACE_MS  = 10 * 60_000; // 10-minute grace before auto clock-out
 
 type Filter = 'upcoming' | 'past' | 'all';
 
@@ -225,9 +241,17 @@ function ShiftDetailModal({ shiftData, userId, orgId, isManager, onClose, onRefr
   const shift = isAssignment ? shiftData.data.shifts : shiftData.data;
   const assignmentId = isAssignment ? shiftData.data.id : null;
   const locationName = shift?.locations?.name ?? shift?.location ?? null;
-  const [clockLoading, setClockLoading] = useState(false);
+  const hasGeo = !!(shift?.geo_lat && shift?.geo_lng);
+  const geoRadius = shift?.geofence_radius ?? 200;
 
-  // Current timesheet + open time entry for this assignment
+  const [clockLoading, setClockLoading] = useState(false);
+  const [geoWarning, setGeoWarning] = useState<string | null>(null); // shown while outside radius
+  const [photoUploading, setPhotoUploading] = useState<'BEFORE' | 'AFTER' | null>(null);
+  const geoOutSince = useRef<number | null>(null);
+  const autoClockOutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const geoInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Current timesheet + open time entry
   const { data: clockState, refetch: refetchClock } = useQuery({
     queryKey: ['clock-state', shift?.id, userId],
     queryFn: async () => {
@@ -245,17 +269,103 @@ function ShiftDetailModal({ shiftData, userId, orgId, isManager, onClose, onRefr
     enabled: isAssignment && !!shift?.id && !!userId,
   });
 
+  // Shift photos
+  const { data: photos = [], refetch: refetchPhotos } = useQuery({
+    queryKey: ['shift-photos', shift?.id, userId],
+    queryFn: async () => {
+      if (!shift?.id || !orgId) return [];
+      const { data } = await supabase
+        .from('shift_photos')
+        .select('id, photo_type, storage_url, employee_user_id')
+        .eq('shift_id', shift.id)
+        .eq('organization_id', orgId)
+        .eq('employee_user_id', userId)
+        .order('created_at', { ascending: true });
+      return data ?? [];
+    },
+    enabled: isAssignment && !!shift?.requires_photos && !!shift?.id,
+  });
+
+  const isClockedIn = !!clockState?.openEntry;
+  const hasTimesheet = !!clockState?.timesheet;
+  const hasBefore = photos.some((p: any) => p.photo_type === 'BEFORE');
+  const hasAfter  = photos.some((p: any) => p.photo_type === 'AFTER');
+
+  // ── GPS geofence monitor while clocked in ──────────────────────────────────
+  useEffect(() => {
+    if (!isClockedIn || !hasGeo) return;
+
+    async function checkPosition() {
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const dist = haversineDistance(pos.coords.latitude, pos.coords.longitude, shift.geo_lat, shift.geo_lng);
+
+        if (dist <= geoRadius) {
+          // Back inside — cancel any pending auto clock-out
+          geoOutSince.current = null;
+          if (autoClockOutTimer.current) { clearTimeout(autoClockOutTimer.current); autoClockOutTimer.current = null; }
+          setGeoWarning(null);
+        } else {
+          const graceMinutes = Math.round(GEO_GRACE_MS / 60000);
+          if (!geoOutSince.current) {
+            geoOutSince.current = Date.now();
+            // Schedule auto clock-out after grace period
+            autoClockOutTimer.current = setTimeout(() => {
+              performClockOut('auto');
+            }, GEO_GRACE_MS);
+          }
+          const minutesLeft = Math.max(0, Math.round((GEO_GRACE_MS - (Date.now() - geoOutSince.current)) / 60000));
+          setGeoWarning(`You are ${Math.round(dist)}m from the shift location (max ${geoRadius}m). Auto clock-out in ${minutesLeft} min.`);
+        }
+      } catch { /* ignore location errors */ }
+    }
+
+    checkPosition();
+    geoInterval.current = setInterval(checkPosition, GEO_POLL_MS);
+    return () => {
+      if (geoInterval.current) clearInterval(geoInterval.current);
+      if (autoClockOutTimer.current) clearTimeout(autoClockOutTimer.current);
+    };
+  }, [isClockedIn, hasGeo]);
+
+  // ── Clock in with geo check ────────────────────────────────────────────────
   async function handleClockIn() {
     if (!shift?.id || !userId || !orgId) return;
-    setClockLoading(true);
+
+    // Geofence check before allowing clock-in
+    if (hasGeo) {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        toast.error('Location required', 'Enable location access to clock in to this shift.');
+        return;
+      }
+      try {
+        setClockLoading(true);
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const dist = haversineDistance(pos.coords.latitude, pos.coords.longitude, shift.geo_lat, shift.geo_lng);
+        if (dist > geoRadius) {
+          toast.error('Outside shift location', `You are ${Math.round(dist)}m away. Must be within ${geoRadius}m to clock in.`);
+          setClockLoading(false);
+          return;
+        }
+      } catch {
+        toast.error('Location error', 'Could not get your location. Please try again.');
+        setClockLoading(false);
+        return;
+      }
+    } else {
+      setClockLoading(true);
+    }
+
     try {
       let timesheetId = clockState?.timesheet?.id;
       if (!timesheetId) {
         const { data: newTs, error: tsErr } = await supabase
           .from('timesheets')
           .insert({ organization_id: orgId, shift_id: shift.id, employee_user_id: userId, status: 'OPEN' })
-          .select('id')
-          .single();
+          .select('id').single();
         if (tsErr) throw tsErr;
         timesheetId = newTs.id;
       }
@@ -272,26 +382,80 @@ function ShiftDetailModal({ shiftData, userId, orgId, isManager, onClose, onRefr
     }
   }
 
-  async function handleClockOut() {
+  // ── Clock out ──────────────────────────────────────────────────────────────
+  async function performClockOut(reason: 'manual' | 'auto' = 'manual') {
     if (!clockState?.openEntry?.id) return;
-    setClockLoading(true);
     try {
       const { error } = await supabase
         .from('time_entries')
         .update({ clock_out: new Date().toISOString() })
         .eq('id', clockState.openEntry.id);
       if (error) throw error;
-      toast.success('Clocked out!', formatTime(new Date()));
+      if (reason === 'auto') {
+        toast.error('Auto clocked out', 'You left the shift location for too long.');
+      } else {
+        toast.success('Clocked out!', formatTime(new Date()));
+      }
+      geoOutSince.current = null;
+      setGeoWarning(null);
       refetchClock();
     } catch (err: any) {
       toast.error('Clock-out failed', err?.message);
-    } finally {
-      setClockLoading(false);
     }
   }
 
-  const isClockedIn = !!clockState?.openEntry;
-  const hasTimesheet = !!clockState?.timesheet;
+  async function handleClockOut() {
+    setClockLoading(true);
+    await performClockOut('manual');
+    setClockLoading(false);
+  }
+
+  // ── Photo upload ───────────────────────────────────────────────────────────
+  async function handleUploadPhoto(photoType: 'BEFORE' | 'AFTER') {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+
+    const asset = result.assets[0];
+    setPhotoUploading(photoType);
+    try {
+      const ext = (asset.uri.split('.').pop() ?? 'jpg').toLowerCase();
+      const safeExt = ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? ext : 'jpg';
+      const filePath = `${orgId}/${shift.id}/${userId}/${photoType}-${Date.now()}.${safeExt}`;
+
+      // Read file as ArrayBuffer via fetch
+      const response = await fetch(asset.uri);
+      const blob = await response.blob();
+
+      const { error: uploadErr } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(filePath, blob, { contentType: `image/${safeExt}`, upsert: false });
+      if (uploadErr) throw uploadErr;
+
+      const { data: urlData } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(filePath);
+
+      const { error: dbErr } = await supabase.from('shift_photos').insert({
+        organization_id: orgId,
+        shift_id: shift.id,
+        assignment_id: assignmentId,
+        employee_user_id: userId,
+        photo_type: photoType,
+        storage_path: filePath,
+        storage_url: urlData.publicUrl,
+      });
+      if (dbErr) throw dbErr;
+
+      toast.success(`${photoType === 'BEFORE' ? 'Before' : 'After'} photo uploaded!`);
+      refetchPhotos();
+    } catch (err: any) {
+      toast.error('Upload failed', err?.message);
+    } finally {
+      setPhotoUploading(null);
+    }
+  }
 
   return (
     <View style={[styles.modal, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
@@ -309,50 +473,107 @@ function ShiftDetailModal({ shiftData, userId, orgId, isManager, onClose, onRefr
             <DetailRow icon="calendar-outline" label="Date" value={formatDate(shift.shift_date, 'EEEE, dd MMMM yyyy')} />
             <DetailRow icon="time-outline" label="Time" value={`${formatTime(shift.start_at)} – ${formatTime(shift.end_at)}`} />
             {locationName && <DetailRow icon="location-outline" label="Location" value={locationName} />}
+            {hasGeo && <DetailRow icon="radio-button-on-outline" label="Geofence" value={`${geoRadius}m radius`} />}
             {(shift.break_minutes ?? 0) > 0 && <DetailRow icon="cafe-outline" label="Break" value={`${shift.break_minutes} min`} />}
             {shift.description && <DetailRow icon="document-text-outline" label="Notes" value={shift.description} />}
           </View>
         )}
 
-        {/* Clock in / out — employee only */}
+        {/* Employee: clock in/out + geo warning + photos */}
         {isAssignment && !isManager && (
-          <View style={styles.clockSection}>
-            {isClockedIn ? (
-              <>
-                <View style={styles.clockedInBanner}>
-                  <View style={styles.clockDot} />
-                  <Text style={styles.clockedInText}>
-                    Clocked in at {formatTime(clockState!.openEntry!.clock_in)}
-                  </Text>
-                </View>
+          <>
+            {/* Geo warning banner */}
+            {geoWarning && (
+              <View style={styles.geoWarningBanner}>
+                <Ionicons name="warning-outline" size={16} color={Colors.danger} />
+                <Text style={styles.geoWarningText}>{geoWarning}</Text>
+              </View>
+            )}
+
+            <View style={styles.clockSection}>
+              {isClockedIn ? (
+                <>
+                  <View style={styles.clockedInBanner}>
+                    <View style={styles.clockDot} />
+                    <Text style={styles.clockedInText}>
+                      Clocked in at {formatTime(clockState!.openEntry!.clock_in)}
+                    </Text>
+                  </View>
+                  <Button
+                    title="Clock Out"
+                    variant="danger"
+                    icon={<Ionicons name="stop-circle-outline" size={18} color="#FFF" />}
+                    onPress={handleClockOut}
+                    loading={clockLoading}
+                    fullWidth
+                    size="lg"
+                  />
+                </>
+              ) : (
                 <Button
-                  title="Clock Out"
-                  variant="danger"
-                  icon={<Ionicons name="stop-circle-outline" size={18} color="#FFF" />}
-                  onPress={handleClockOut}
+                  title={hasTimesheet ? 'Clock In Again' : 'Clock In'}
+                  icon={<Ionicons name="play-circle-outline" size={18} color="#FFF" />}
+                  onPress={handleClockIn}
                   loading={clockLoading}
                   fullWidth
                   size="lg"
                 />
-              </>
-            ) : (
-              <Button
-                title={hasTimesheet ? 'Clock In Again' : 'Clock In'}
-                icon={<Ionicons name="play-circle-outline" size={18} color="#FFF" />}
-                onPress={handleClockIn}
-                loading={clockLoading}
-                fullWidth
-                size="lg"
-              />
-            )}
+              )}
+            </View>
 
+            {/* Before / after photos */}
             {shift?.requires_photos && (
-              <View style={styles.photoNote}>
-                <Ionicons name="camera-outline" size={16} color={Colors.warning} />
-                <Text style={styles.photoNoteText}>This shift requires photo verification</Text>
+              <View style={styles.photoSection}>
+                <Text style={styles.photoSectionTitle}>
+                  <Ionicons name="camera-outline" size={15} color={Colors.textSecondary} /> Shift Photos Required
+                </Text>
+                <View style={styles.photoRow}>
+                  {/* BEFORE */}
+                  <View style={styles.photoSlot}>
+                    <Text style={styles.photoSlotLabel}>BEFORE</Text>
+                    {hasBefore ? (
+                      <Image
+                        source={{ uri: photos.find((p: any) => p.photo_type === 'BEFORE')?.storage_url }}
+                        style={styles.photoThumb}
+                      />
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.photoUploadBtn}
+                        onPress={() => handleUploadPhoto('BEFORE')}
+                        disabled={!!photoUploading}
+                      >
+                        {photoUploading === 'BEFORE'
+                          ? <ActivityIndicator size="small" color={Colors.primary} />
+                          : <><Ionicons name="cloud-upload-outline" size={22} color={Colors.primary} /><Text style={styles.photoUploadText}>Upload</Text></>
+                        }
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  {/* AFTER */}
+                  <View style={styles.photoSlot}>
+                    <Text style={styles.photoSlotLabel}>AFTER</Text>
+                    {hasAfter ? (
+                      <Image
+                        source={{ uri: photos.find((p: any) => p.photo_type === 'AFTER')?.storage_url }}
+                        style={styles.photoThumb}
+                      />
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.photoUploadBtn}
+                        onPress={() => handleUploadPhoto('AFTER')}
+                        disabled={!!photoUploading}
+                      >
+                        {photoUploading === 'AFTER'
+                          ? <ActivityIndicator size="small" color={Colors.primary} />
+                          : <><Ionicons name="cloud-upload-outline" size={22} color={Colors.primary} /><Text style={styles.photoUploadText}>Upload</Text></>
+                        }
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
               </View>
             )}
-          </View>
+          </>
         )}
 
         {/* Manager: show assigned staff count */}
@@ -612,4 +833,16 @@ const styles = StyleSheet.create({
   employeeOptionActive: { backgroundColor: Colors.primary + '15' },
   employeeOptionText: { fontSize: FontSize.base, color: Colors.textPrimary },
   employeeOptionEmail: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
+  // Geo warning
+  geoWarningBanner: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.warning + '20', borderRadius: Radius.md, padding: Spacing.sm + 2, borderWidth: 1, borderColor: Colors.warning + '60', marginBottom: Spacing.sm },
+  geoWarningText: { flex: 1, fontSize: FontSize.sm, color: Colors.warning, fontWeight: FontWeight.medium },
+  // Photo upload
+  photoSection: { marginBottom: Spacing.lg },
+  photoSectionTitle: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: Colors.textSecondary, marginBottom: Spacing.sm },
+  photoRow: { flexDirection: 'row', gap: Spacing.md },
+  photoSlot: { flex: 1, alignItems: 'center', gap: Spacing.xs },
+  photoSlotLabel: { fontSize: FontSize.xs, fontWeight: FontWeight.semibold, color: Colors.textMuted, letterSpacing: 0.5 },
+  photoThumb: { width: '100%', aspectRatio: 1, borderRadius: Radius.md, backgroundColor: Colors.bgInput },
+  photoUploadBtn: { width: '100%', aspectRatio: 1, borderRadius: Radius.md, borderWidth: 2, borderColor: Colors.primary + '60', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primaryLight + '10', gap: 4 },
+  photoUploadText: { fontSize: FontSize.xs, color: Colors.primary, fontWeight: FontWeight.medium },
 });

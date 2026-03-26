@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -16,6 +16,25 @@ export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
+
+  // ── Realtime: new notifications appear instantly without refresh ──────────
+  useEffect(() => {
+    if (!user?.id) return;
+    const channel = supabase
+      .channel(`notifications-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` },
+        () => queryClient.invalidateQueries({ queryKey: ['notifications', user.id] }),
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` },
+        () => queryClient.invalidateQueries({ queryKey: ['notifications', user.id] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user?.id]);
 
   const { data: notifications = [], isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['notifications', user?.id],
