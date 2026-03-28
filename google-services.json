@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1076021149292",
+    "project_id": "worklynx-8b31a",
+    "storage_bucket": "worklynx-8b31a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1076021149292:android:89a74b7851c91d8b58e249",
+        "android_client_info": {
+          "package_name": "com.au.worklynx"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDrSne5S7CuINwxeI3vT-mCBVGvVcRvfyI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
