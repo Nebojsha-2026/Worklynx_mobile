@@ -28,6 +28,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0F172A"
       },
+      "googleServicesFile": "./google-services.json",
       "package": "com.au.worklynx",
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
