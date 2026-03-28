@@ -8,33 +8,32 @@ export function useAuthListener() {
   useEffect(() => {
     setIsLoading(true);
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) {
-        loadUserData(session.user.id);
-      } else {
-        setIsLoading(false);
-      }
-    }).catch((err) => {
-      console.warn('getSession error:', err);
-      setIsLoading(false);
-    });
+    // Safety net: never stay stuck on loading screen (e.g. no/slow network)
+    const safetyTimer = setTimeout(() => setIsLoading(false), 10_000);
 
+    // Use onAuthStateChange only (not getSession) — it fires INITIAL_SESSION
+    // on mount which avoids calling loadUserData twice simultaneously
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       setSession(session);
+
       if (session) {
+        // Authenticate the Realtime client so RLS-filtered subscriptions work
+        supabase.realtime.setAuth(session.access_token);
+        clearTimeout(safetyTimer);
         await loadUserData(session.user.id);
       } else {
         reset();
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      subscription.unsubscribe();
+      clearTimeout(safetyTimer);
+    };
   }, []);
 
   async function loadUserData(userId: string) {
     try {
-      // FIX: profiles PK is user_id, not id
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
@@ -51,7 +50,6 @@ export function useAuthListener() {
 
       setIsPlatformAdmin(!!adminData);
 
-      // FIX: org_members uses is_active boolean, not status string
       const { data: member } = await supabase
         .from('org_members')
         .select('*, organizations(*)')
