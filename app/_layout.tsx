@@ -1,15 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Stack, router, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ToastProvider } from '@/components/ui/Toast';
 import { LoadingScreen } from '@/components/ui/LoadingScreen';
 import { useAuthListener } from '@/hooks/useAuth';
 import { useAuthStore } from '@/store/authStore';
 import { useThemeStore } from '@/store/themeStore';
+import { supabase } from '@/lib/supabase';
 import { Colors } from '@/lib/theme';
 import { usePermissions } from '@/hooks/usePermissions';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
@@ -44,17 +45,32 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function RootLayoutInner({ themeKey }: { themeKey: number }) {
+// Global realtime notification subscription — active on every tab
+function useGlobalNotifications(userId: string | undefined) {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!userId) return;
+    const channel = supabase
+      .channel(`global-notifications-${userId}`)
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+        () => qc.invalidateQueries({ queryKey: ['notifications', userId] }),
+      )
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+        () => qc.invalidateQueries({ queryKey: ['notifications', userId] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [userId]);
+}
+
+function RootLayoutInner() {
   const { isLoading, user, session } = useAuthStore();
-  const { isDark } = useThemeStore();
 
-  useAuthListener();
-
-  // Request permissions once the user is authenticated
   usePermissions(!!session && !isLoading);
-
-  // Register Expo push token + handle notification taps
   usePushNotifications(user?.id);
+  useGlobalNotifications(user?.id);
 
   useEffect(() => {
     if (!isLoading) SplashScreen.hideAsync();
@@ -74,19 +90,24 @@ function RootLayoutInner({ themeKey }: { themeKey: number }) {
 export default function RootLayout() {
   const [themeKey, setThemeKey] = useState(0);
   const { loadTheme, isDark } = useThemeStore();
+  const prevIsDark = useRef(isDark);
 
-  // Load saved theme preference on app start
+  // useAuthListener lives here — outside the re-keyed RootLayoutInner
+  // so theme changes never restart the auth flow
+  useAuthListener();
+
+  // Load saved theme on first mount
   useEffect(() => {
     loadTheme().then(() => setThemeKey((k) => k + 1));
   }, []);
 
-  // Re-render entire tree when theme changes (so Colors object takes effect)
-  const { toggleTheme: _toggle } = useThemeStore();
+  // Only re-key when the theme actually flips (user explicitly toggled it)
   useEffect(() => {
-    // Subscribe to theme changes via zustand
-    const unsub = useThemeStore.subscribe(() => setThemeKey((k) => k + 1));
-    return unsub;
-  }, []);
+    if (prevIsDark.current !== isDark) {
+      prevIsDark.current = isDark;
+      setThemeKey((k) => k + 1);
+    }
+  }, [isDark]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -94,7 +115,7 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
             <StatusBar style={isDark ? 'light' : 'dark'} backgroundColor={Colors.bg} />
-            <RootLayoutInner key={themeKey} themeKey={themeKey} />
+            <RootLayoutInner key={themeKey} />
           </ToastProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
